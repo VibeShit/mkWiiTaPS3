@@ -23,6 +23,12 @@ struct UiSelection {
  // The retail unlocked engine-class page switches both 50cc/100cc entries
  // together between their restricted type and the combined kart/bike list.
  bool mixedEngineTypes=false;
+ // Multiplayer (splitscreen Grand Prix): the number of local players and
+ // players 2..4's own choices; player 1's are driver, vehicle and automatic.
+ static constexpr unsigned MaxPlayers=4;
+ struct PlayerChoice {unsigned driver=0,vehicle=0;bool automatic=false;bool operator==(const PlayerChoice&)const=default;};
+ unsigned players=1;
+ std::array<PlayerChoice,MaxPlayers-1> others{};
  bool operator==(const UiSelection&)const=default;
 };
 struct UiCharacterInfo {const char* name;unsigned retailId,weight;};

@@ -103,6 +103,18 @@ u32 hidKeysDownRepeat(void);
 void hidSetRepeatParameters(u32 delay, u32 interval);
 void hidCircleRead(circlePosition* pos);
 void hidTouchRead(touchPosition* pos);
+// Local multiplayer (not libctru): player n is the n-th connected controller;
+// player 0 is the one the calls above read.
+#define HID_MAX_PLAYERS 4
+unsigned hidPadCount(void);
+u32 hidPadKeysHeld(unsigned player);
+u32 hidPadKeysDown(unsigned player);
+u32 hidPadKeysDownRepeat(unsigned player);
+void hidPadCircleRead(unsigned player, circlePosition* pos);
+// Splitscreen GPU controls (not citro3d): mirrored views swap the culled
+// face; the top screen's target renders at its internal resolution / divisor.
+void c3dport_SetCullSwap(bool swap);
+void c3dport_SetResolutionDivisor(float divisor);
 
 // ---- Display (one screen; the RSX layer owns it) ----------------------------
 typedef enum { GFX_TOP = 0, GFX_BOTTOM = 1 } gfxScreen_t;

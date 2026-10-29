@@ -247,6 +247,12 @@ extern "C" u32 hidKeysDownRepeat(void) { return repeat; }
 extern "C" void hidSetRepeatParameters(u32 delay, u32 interval) { repeatDelay = delay; repeatInterval = interval ? interval : 1; }
 extern "C" void hidCircleRead(circlePosition* pos) { *pos = circle; }
 extern "C" void hidTouchRead(touchPosition* pos) { *pos = touch; }
+// One local player: the Vita's own controls.
+extern "C" unsigned hidPadCount(void) { return 1; }
+extern "C" u32 hidPadKeysHeld(unsigned player) { return player ? 0 : held; }
+extern "C" u32 hidPadKeysDown(unsigned player) { return player ? 0 : down; }
+extern "C" u32 hidPadKeysDownRepeat(unsigned player) { return player ? 0 : repeat; }
+extern "C" void hidPadCircleRead(unsigned player, circlePosition* pos) { *pos = player ? circlePosition{} : circle; }
 
 // ---- Display -----------------------------------------------------------------
 namespace c3dvita { void initDisplay(); }

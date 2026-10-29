@@ -75,7 +75,9 @@ public:
     // The Vita's single screen: the Wii's small course map at the right of the
     // upper screen (the road traced from the KMP checkpoints, the local
     // racer's face where it is), drawn into the current top-screen pass.
-    void drawMini(Renderer& renderer,const BottomView& view);
+    // large: the whole course across the current view (splitscreen's spare
+    // quadrant), without the timer; view.racer's local flags pick the larger faces.
+    void drawMini(Renderer& renderer,const BottomView& view,bool large=false);
     // runtime.log line: what is resident.
     void describe(char* text,unsigned size) const;
 private:

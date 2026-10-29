@@ -44,6 +44,31 @@ The log goes to `/dev_hdd0/game/MKWP00001/USRDIR/mkw/ps3.log`.
 `mkw/quality.txt`, line `resolution = N`: the internal resolution as a
 multiple of 400x240. N ranges from 1 to 4 and defaults to 2; 3 is about 720p.
 
+Splitscreen (see below) adds two lines:
+
+| Setting | Default | |
+|---|---|---|
+| `splitDivisor` | `2` | The internal resolution is divided by this while 2-4 players race (`1` to `4`) |
+| `splitRacers` | `8` | Racers in a splitscreen Grand Prix: the players plus CPUs (`4` to `12`) |
+
+## Multiplayer (splitscreen Grand Prix)
+
+Connect one DualShock 3 per player, then choose **Multiplayer** on the main
+menu and pick **2P**, **3P** or **4P**. Player *n* is the *n*-th connected
+controller.
+
+1. Player 1 chooses the engine class (50cc, 100cc, 150cc or Mirror).
+2. Every player picks a character, vehicle and drift type at the same time,
+   each on their own grid with their own controller. Circle backs out of a
+   choice; player 1's Circle on the character grid returns to the classes.
+3. Once everyone is ready, player 1 picks the cup.
+
+The race uses the Wii's layouts: two players get the top and bottom halves,
+three or four players get quadrants. With three players the fourth quadrant
+shows the course map with every racer. Each view has its own camera and HUD;
+the result boards appear once every player has crossed the line. Any
+player's START pauses. Course bloom is off in splitscreen.
+
 ## Controls
 
 | PS3 | Game |

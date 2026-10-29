@@ -32,6 +32,11 @@ public:
     static constexpr unsigned Capacity=12;
     // Call within the RaceConfig init callback. Count=1 keeps a solo race.
     void configure(Kinoko::System::RaceConfig& config,unsigned localGarageChoice,unsigned count=Capacity);
+    // Splitscreen: racers 0..locals-1 are local players with these garage
+    // choices (locals <= MaxLocal); the CPUs take other drivers.
+    static constexpr unsigned MaxLocal=4;
+    void configure(Kinoko::System::RaceConfig& config,const unsigned* localGarageChoices,unsigned locals,unsigned count);
+    unsigned localCount() const{return locals_;}
     // Call after every scene creation/restart. Owns copies, never scene pointers.
     bool reset();
     // Call immediately before scene.calc. Player zero remains human unless
@@ -50,6 +55,10 @@ public:
     static float steeringTo(Vec3 forward,Vec3 offset);
     // QA autopilot: player zero follows the CPU route like the other racers.
     bool driveLocal=false;
+    // Local players handed to the route driver (after their goal), by racer bit.
+    uint32_t driveLocalMask=0;
+    // driveLocal (player 1's goal, QA autopilot) hands over racer 0 only.
+    bool aiDriven(unsigned racer) const{return racer>=locals_||(racer==0&&driveLocal)||(driveLocalMask>>racer&1);}
     bool battleArena() const{return battleArena_;}
     // Grid slots (0 = pole) by racer for the next configure(), as retail starts
     // a Grand Prix's races in the previous race's finishing order; 0xff keeps
@@ -67,7 +76,7 @@ private:
     std::array<unsigned,Capacity> choices_{},ranks_{},laps_{};
     std::array<bool,Capacity> finished_{};
     CpuSpeedParam speedParam_{};bool speedParamReady_=false;float lapDistance_=0;
-    unsigned count_=1;bool battleArena_=false;
+    unsigned count_=1,locals_=1;bool battleArena_=false;
     std::array<uint8_t,Capacity> startSlots_{0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff};
 };
 }

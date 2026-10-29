@@ -71,8 +71,13 @@ constexpr const char* DataDir = "ux0:data/mkw"; // mapped onto the hard disk (ct
 // 2 (the default) renders the 16:9 top screen at 848x480; quality.txt
 // "resolution=3" gives 1272x720. Read once, before any target exists.
 float Scale = 2.f;
-inline int scaled(int v) { return int(std::lround(float(v) * Scale)); }
-inline int scaledSpan(int from, int size) { return scaled(from + size) - scaled(from); }
+inline int scaled(int v, float scale = Scale) { return int(std::lround(float(v) * scale)); }
+inline int scaledSpan(int from, int size, float scale = Scale) { return scaled(from + size, scale) - scaled(from, scale); }
+// Splitscreen (c3dport_SetResolutionDivisor): the top screen's target is drawn
+// at Scale / Divisor, into its lower-left corner, which present() stretches.
+float Divisor = 1.f;
+// Mirrored splitscreen views (c3dport_SetCullSwap): front and back swap.
+bool cullSwap = false;
 
 bool displayReady = false;
 uint32_t displayWidth = 1280, displayHeight = 720;
@@ -667,6 +672,7 @@ void bindSurface(uint32_t colorOffset, uint32_t colorPitch, uint32_t depthOffset
 struct AppliedState {
 	bool valid = false;
 	Target* target = nullptr;
+	float scale = 0.f;
 	int viewport[4] = {};
 	bool scissor = false; int scissorBox[4] = {};
 	bool depthEnable = false; u8 depthFunc = 0, writeMask = 0;
@@ -725,17 +731,19 @@ void applyFixedState() {
 		bindSurface(t->colorOffset, t->colorPitch, t->depthOffset, t->depthPitch, t->width, t->height);
 		a.target = t;
 	}
-	if (all || std::memcmp(a.viewport, state.viewport, sizeof a.viewport)) {
-		setViewport(scaled(state.viewport[0]), scaled(state.viewport[1]), scaledSpan(state.viewport[0], state.viewport[2]), scaledSpan(state.viewport[1], state.viewport[3]));
+	const float scale = t == topOutput ? Scale / Divisor : Scale;
+	if (all || a.target != t || std::memcmp(a.viewport, state.viewport, sizeof a.viewport) || a.scale != scale) {
+		setViewport(scaled(state.viewport[0], scale), scaled(state.viewport[1], scale), scaledSpan(state.viewport[0], state.viewport[2], scale), scaledSpan(state.viewport[1], state.viewport[3], scale));
 		std::memcpy(a.viewport, state.viewport, sizeof a.viewport);
 	}
-	if (all || a.scissor != state.scissor || (state.scissor && std::memcmp(a.scissorBox, state.scissorBox, sizeof a.scissorBox))) {
+	if (all || a.target != t || a.scissor != state.scissor || a.scale != scale || (state.scissor && std::memcmp(a.scissorBox, state.scissorBox, sizeof a.scissorBox))) {
 		if (state.scissor)
-			rsxSetScissor(context, u16(std::max(0, scaled(state.scissorBox[0]))), u16(std::max(0, scaled(state.scissorBox[1]))),
-				u16(std::max(0, scaledSpan(state.scissorBox[0], state.scissorBox[2]))), u16(std::max(0, scaledSpan(state.scissorBox[1], state.scissorBox[3]))));
+			rsxSetScissor(context, u16(std::max(0, scaled(state.scissorBox[0], scale))), u16(std::max(0, scaled(state.scissorBox[1], scale))),
+				u16(std::max(0, scaledSpan(state.scissorBox[0], state.scissorBox[2], scale))), u16(std::max(0, scaledSpan(state.scissorBox[1], state.scissorBox[3], scale))));
 		else rsxSetScissor(context, 0, 0, 4095, 4095);
 		a.scissor = state.scissor; std::memcpy(a.scissorBox, state.scissorBox, sizeof a.scissorBox);
 	}
+	a.scale = scale;
 	// PICA writes depth only while the depth test is on; a depth-less target
 	// never tests or writes it.
 	const bool depthOn = state.depthEnable && t->hasDepth;
@@ -1032,7 +1040,10 @@ void present(Target* top) {
 	// Landscape (x, y from the top-left) shows portrait window (240 - y, W - x)
 	// of a W-wide canvas: u = 1 - y/240, v = 1 - x/W.
 	auto* quad = reinterpret_cast<float*>(scratchAlloc(4 * 4 * sizeof(float)));
-	const float vertices[4][4] = {{-sx, sy, 1, 1}, {sx, sy, 1, 0}, {-sx, -sy, 0, 1}, {sx, -sy, 0, 0}}; // x, y, u, v
+	// A divided frame fills only the target's lower-left corner.
+	const float su = float(scaled(top->c3d.frameBuf.width, Scale / Divisor)) / float(top->width);
+	const float sv = float(scaled(top->c3d.frameBuf.height, Scale / Divisor)) / float(top->height);
+	const float vertices[4][4] = {{-sx, sy, su, sv}, {sx, sy, su, 0}, {-sx, -sy, 0, sv}, {sx, -sy, 0, 0}}; // x, y, u, v
 	std::memcpy(quad, vertices, sizeof vertices);
 	loadTexture(0, top->colorOffset, GCM_LOCATION_RSX, GCM_TEXTURE_FORMAT_A8R8G8B8 | GCM_TEXTURE_FORMAT_LIN, 1, unsigned(top->width), unsigned(top->height), top->colorPitch, true);
 	rsxTextureControl(context, 0, GCM_TRUE, 0, 0, GCM_TEXTURE_MAX_ANISO_1);
@@ -1238,7 +1249,12 @@ void C3D_TexEnvBufColor(u32 color) { state.envBufColor = color; }
 
 // ---- Effects ----------------------------------------------------------------------------
 void C3D_DepthMap(bool, float, float) {} // the game keeps citro3d's default map
-void C3D_CullFace(GPU_CULLMODE mode) { state.cull = u8(mode); }
+void C3D_CullFace(GPU_CULLMODE mode) {
+	if (cullSwap && mode != GPU_CULL_NONE) mode = mode == GPU_CULL_FRONT_CCW ? GPU_CULL_BACK_CCW : GPU_CULL_FRONT_CCW;
+	state.cull = u8(mode);
+}
+extern "C" void c3dport_SetCullSwap(bool swap) { cullSwap = swap; }
+extern "C" void c3dport_SetResolutionDivisor(float divisor) { Divisor = std::clamp(divisor, 1.f, 4.f); }
 void C3D_StencilTest(bool enable, GPU_TESTFUNC function, int ref, int inputMask, int writeMask) {
 	state.stencilEnable = enable; state.stencilFunc = u8(function);
 	state.stencilRef = u8(ref); state.stencilInMask = u8(inputMask); state.stencilWriteMask = u8(writeMask);

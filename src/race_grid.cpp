@@ -99,9 +99,14 @@ Vec3 EnemyRoute::target(unsigned segment,unsigned racer,Vec3 pos,float lookahead
 }
 
 void RaceGrid::configure(Kinoko::System::RaceConfig& config,unsigned localChoice,unsigned count){
+    configure(config,&localChoice,1,count);
+}
+void RaceGrid::configure(Kinoko::System::RaceConfig& config,const unsigned* localChoices,unsigned locals,unsigned count){
     constexpr unsigned driverCount=GarageChoices.size()/VehiclesPerDriver;
     static_assert(GarageChoices.size()%VehiclesPerDriver==0&&driverCount>=Capacity);
-    count_=std::clamp(count,1u,Capacity);localChoice%=GarageChoices.size();
+    locals_=std::clamp(locals,1u,MaxLocal);
+    count_=std::clamp(count,locals_,Capacity);
+    const unsigned localChoice=localChoices[0]%GarageChoices.size();
     auto& scenario=config.raceScenario();scenario.playerCount=count_;
     const unsigned course=unsigned(scenario.course);
     battleArena_=course>=32&&course<42;
@@ -115,11 +120,22 @@ void RaceGrid::configure(Kinoko::System::RaceConfig& config,unsigned localChoice
         // CPUs take each driver's standard kart, or standard bike (garage slot 3)
         // in the bikes-only 100cc Grand Prix.
         const unsigned cpuVehicle=config.raceScenario().engineClass==1?3:0;
-        choices_[i]=i?((localDriver+i)%driverCount)*VehiclesPerDriver+cpuVehicle:localChoice;
+        if(i<locals_)choices_[i]=localChoices[i]%GarageChoices.size();
+        else{
+            // The drivers after player 1's, skipping those the other local players race.
+            unsigned driver=localDriver+i-locals_;
+            for(unsigned step=0;step<driverCount;++step){
+                driver=(driver+1)%driverCount;
+                bool taken=false;
+                for(unsigned j=0;j<i;++j)taken|=choices_[j]/VehiclesPerDriver==driver;
+                if(!taken)break;
+            }
+            choices_[i]=driver*VehiclesPerDriver+cpuVehicle;
+        }
         const auto& choice=GarageChoices[choices_[i]];
         p.character=static_cast<Kinoko::Character>(choice.character);p.vehicle=static_cast<Kinoko::Vehicle>(choice.vehicle);
-        p.type=i?Kinoko::System::RaceConfig::Player::Type::CPU:Kinoko::System::RaceConfig::Player::Type::Local;
-        p.driftIsAuto=i!=0;
+        p.type=i>=locals_?Kinoko::System::RaceConfig::Player::Type::CPU:Kinoko::System::RaceConfig::Player::Type::Local;
+        p.driftIsAuto=i>=locals_;
     }
 }
 bool RaceGrid::reset(){
@@ -169,7 +185,7 @@ bool RaceGrid::reset(){
     size_t actionSize=0;const void* actions=System::ResourceManager::Instance()->getFile("kartAIActionParam.bin",&actionSize,System::ArchiveId::Core);
     setup.actionsReady=readCpuActionParam(actions,actionSize,setup.cpuMode,setup.actions);
     if(!setup.actionsReady)for(auto& a:setup.actions)a={50,10,70,70,80,50,0,0};
-    setup.courseLength=std::max(routeLength,1000.f);setup.humanMask=1;
+    setup.courseLength=std::max(routeLength,1000.f);setup.humanMask=(1u<<locals_)-1;
     setup.seed=0x9e3779b9u^(unsigned(config->raceScenario().course)*2654435761u);
     ai_.reset(setup);
     return ok;
@@ -188,17 +204,17 @@ void RaceGrid::beforeStep(uint16_t bulletPlayers){
     for(unsigned j=1;j<count_;++j)leaderCompletion=std::max(leaderCompletion,manager->player(j).raceCompletion());
     // Retail Enemy::AI drives every CPU outside a Bullet (and player zero for QA).
     uint32_t aiMask=0;
-    for(unsigned i=0;i<count_;++i)if(!(bulletPlayers&(1u<<i))&&(i||driveLocal))aiMask|=1u<<i;
+    for(unsigned i=0;i<count_;++i)if(!(bulletPlayers&(1u<<i))&&aiDriven(i))aiMask|=1u<<i;
     if(ai_.ready()){
         // CPUs run the retail stuck handler inside CpuAi; the QA autopilot keeps
         // the adapted recovery below.
-        ai_.setRecovering(0,drivers_[0].reverse>0);
+        for(unsigned i=0;i<locals_;++i)ai_.setRecovering(i,drivers_[i].reverse>0);
         ai_.step(aiMask,ranks_,laps_,finished_,3);
     }
     for(unsigned i=0;i<count_;++i){
         const bool bullet=(bulletPlayers&(1u<<i))!=0;
         auto& d=drivers_[i];
-        if(i==0&&!bullet&&!driveLocal){if(d.bullet)objects->object(i)->move()->setKartSpeedLimit();d.bullet=false;continue;}
+        if(!aiDriven(i)&&!bullet){if(d.bullet)objects->object(i)->move()->setKartSpeedLimit();d.bullet=false;continue;}
         auto* pad=System::KPadDirector::Instance()->hostController(i);
         if(battleArena_&&!bullet){battleDrive(i,racing);continue;}
         const auto& route=bullet?bulletRoute_:route_;
@@ -230,7 +246,7 @@ void RaceGrid::beforeStep(uint16_t bulletPlayers){
             const auto& command=ai_.command(i);
             uint16_t buttons=command.buttons;float aiStick=command.stick;
             float speed=std::fabs(kart->move()->speed());
-            if(racing&&!respawning&&i==0){
+            if(racing&&!respawning&&i<locals_){
                 // QA autopilot only: adapted reverse-out recovery.
                 if(speed<3.f){if(++d.stuck>150){d.reverse=70;d.stuck=0;++d.recoveries;}}else d.stuck=0;
                 if(d.reverse){--d.reverse;buttons=2;aiStick=0;}

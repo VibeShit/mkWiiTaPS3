@@ -74,7 +74,7 @@ void RaceFlowUi::drawWipe(Renderer& renderer,float progress){
  // the hold (translate 1) showed the scene and the wipe went black on either
  // side of it, a second time just after the respawn instead of over it.
  // The pane spans the whole 832x456 screen; colour register 0 is black.
- renderer.drawScreenSpriteRegion(m.wipe,0,0,display::Width,240,0,FlowWipeTextureV-v0,1,FlowWipeTextureV-v1,1.f,0x000000ffu);
+ renderer.drawScreenSpriteRegion(m.wipe,0,0,renderer.canvasWidth(),240,0,FlowWipeTextureV-v0,1,FlowWipeTextureV-v1,1.f,0x000000ffu);
 }
 
 void RaceFlowUi::step(const RaceResultsFlow& flow){impl_->drawer.step(flow);}

@@ -107,6 +107,8 @@ public:
 // The frame's camera, copied for culling work off the rendering thread.
 struct ViewFrustum {
     C3D_Mtx view,projection;
+    // Culls nothing (splitscreen work recorded once for every view).
+    bool all=false;
     ClipFrustum model(const C3D_Mtx& transform) const;
     bool visible(const Model& model,const C3D_Mtx& transform) const {return this->model(transform).intersects({model.minimum,model.maximum});}
     // Renderer::cameraFacing for this camera.
@@ -223,6 +225,23 @@ public:
     bool projectTop(Vec3 world,float& x,float& y,float& viewZ) const;
     void begin(Vec3 eye,Vec3 target,Vec3 up);
     void beginSourceCamera(const float* view,const float* projection);
+    // Splitscreen (local multiplayer). A view is a rectangle of the top screen
+    // in canvas units (origin top-left) showing a canvas `canvas` units wide
+    // and 240 high: later screen-space draws use the view's canvas, 3D draws
+    // the rectangle's aspect. Mirror views flip the 3D scene (not the canvas).
+    struct ScreenView {float x=0,y=0,w=display::Width,h=240,canvas=display::Width;bool mirror=false;};
+    // Within a frame (after begin()): later draws go to `view`, seen from this
+    // camera at the current fov. A frame's views must not overlap; bloom and
+    // requestMirror() are full-screen only.
+    void beginView(const ScreenView& view,Vec3 eye,Vec3 target,Vec3 up);
+    // The same keeping the frame's camera (2D pages, drawAtScreen models).
+    void beginView(const ScreenView& view);
+    // The current view's canvas (display::Width outside splitscreen).
+    float canvasWidth() const {return mainScreenWidth_;}
+    float canvasCenterX() const {return mainScreenWidth_*.5f;}
+    // Internal resolution divided by this from the next frame on (1: full).
+    // Platforms without a scalable target ignore it.
+    void setResolutionDivisor(float divisor){divisor_=divisor;}
     // Called per submesh after its default textures and fixed-function state
     // are bound: the binder configures every combiner and may override any of it.
     // In a deferred frame it runs on the render thread with a copy of its context.
@@ -230,7 +249,10 @@ public:
     using ShapeVisible = bool (*)(void* context,std::size_t submesh);
     ClipFrustum modelFrustum(const C3D_Mtx& transform) const;
     // Culling covers both eyes in stereo frames (stereo::cullingUnion).
-    ViewFrustum viewFrustum() const {return {mainView_,cullProjection_};}
+    ViewFrustum viewFrustum() const {return {mainView_,cullProjection_,cullAll_};}
+    // Splitscreen: while set, viewFrustum() culls nothing, for work recorded
+    // once per frame and drawn in every view (course objects).
+    void setCullAll(bool on){cullAll_=on;}
     bool visible(const Model& model,const C3D_Mtx& transform) const;
     void draw(const Model& model,const C3D_Mtx& transform,bool backdrop=false){drawWith(model,transform,backdrop,nullptr,nullptr,0,nullptr);}
     // The binder context is copied (a deferred frame draws later); it must not
@@ -497,6 +519,7 @@ private:
     int environmentMappedLoc_=-1,diffuseLightingLoc_=-1;
     bool retailUniformLocations();
     void retailBeginFrame();
+    void retailView();
     void retailShutdown();
     void retailFogNow(const RetailFog& fog);
     // Light uniforms of one submesh; false leaves the legacy path to the caller.
@@ -528,14 +551,25 @@ private:
     bool mirrorRequested_=false,mirrorFrame_=false,flipComposite_=false;
     // Recording side: this frame is mirrored (projectTop flips screen X to match).
     bool mirrorView_=false;
+    // Splitscreen: the recording side's view aspect (setFov) and resolution
+    // divisor; the drawing side's current view.
+    float viewAspect_=display::Aspect,divisor_=1;
+    bool cullAll_=false;
+    ScreenView screenView_{};
+    void viewNow(const C3D_Mtx& view,const C3D_Mtx& projection,const ScreenView& screen);
     const CourseBloom* bloomSettings_=nullptr;
     C3D_Tex white_{};
-    static constexpr int kOverlayCapacity=48;
+    // Splitscreen views each add their own fades and HUD quads.
+    static constexpr int kOverlayCapacity=192;
     static constexpr unsigned kBloomVertices=6*40;
     Vertex* overlay_=nullptr;
     int overlayCount_=0;
     // Authored Wii HUD panes include layered frames, glyphs and animation quads.
+#ifdef __PPU__
+    static constexpr int kSpriteCapacity=8192; // up to four splitscreen HUDs and mini maps
+#else
     static constexpr int kSpriteCapacity=2048; // Vita: room for the mini map (race_bottom_screen.cpp drawMini)
+#endif
     Vertex* sprites_=nullptr;
     // The sprite writers' current buffer: the top screen's (sprites_), or after
     // beginBottom the bottom screen's own quads, the last kBottomSpriteCapacity*6
@@ -551,11 +585,19 @@ private:
     uint8_t sparkCounts_[DriftEffects::Capacity*2]{}; // vertices per spark, at its first vertex / 6
     // NW4R EF: second shader (DVLE 1), view-space vertices and the colour-lookup texture.
     static constexpr unsigned kEffectVertices=8192;
-    void* effectVertices_=nullptr;
+    // One list, vertex buffer and lookup texture per splitscreen view: each
+    // is written where its view draws and read by the GPU until FrameEnd.
+#ifdef __PPU__
+    static constexpr unsigned kEffectSlots=4;
+#else
+    static constexpr unsigned kEffectSlots=1;
+#endif
+    void* effectVertices_[kEffectSlots]{};
+    unsigned effectSlot_=0;
     shaderProgram_s effectProgram_{};
     bool effectProgramReady_=false;
     int effectProjectionLoc_=-1;
-    C3D_Tex effectLookup_{};
+    C3D_Tex effectLookup_[kEffectSlots]{};
     struct EffectDrawState* effectDraw_=nullptr; // owned; deleted in shutdown()
     int spriteCount_=0;
     // Consecutive screen sprites sharing texture and blend are one draw call.

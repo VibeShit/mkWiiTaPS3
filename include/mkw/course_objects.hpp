@@ -32,6 +32,9 @@ public:
     void draw(Renderer& renderer,unsigned tick,Vec3 camera);
     // Transparent tide layers, after opaque scenery and racers, before effects.
     void drawWater(Renderer& renderer);
+    // Splitscreen: prepare() records once (call it with Renderer::setCullAll)
+    // and every view's draw replays that recording until the next prepare().
+    void setAllViews(bool on);
     // Sky-pass objects (suns, Rainbow Road's Earth glow): drawn after the sky,
     // before the course, so walls and scenery cover them.
     void drawSky(Renderer& renderer,unsigned tick,Vec3 camera);

@@ -212,82 +212,107 @@ extern "C" Result CFGU_GetModelNintendo2DS(u8* value) { *value = 0; return -1; }
 extern "C" Result CFGU_GetConfigInfoBlk2(u32, u32, void*) { return -1; }
 
 // ---- HID ---------------------------------------------------------------------
-// The first connected controller, laid out as on the Vita: Cross accelerates
-// and confirms (3DS A), Circle brakes and backs out (B), Triangle is X and
-// Square is Y; L1/R1 are L/R (L2/R2 as well); the left stick is the Circle Pad.
-static u32 held = 0, down = 0, up = 0, repeat = 0;
-static u32 repeatDelay = 30, repeatInterval = 6, repeatCount = 0, repeatHeld = 0;
-static circlePosition circle{};
-static touchPosition touch{};
-static bool inputReady = false;
-static u32 lastKeys = 0;
-static int lastRx = 0, lastRy = 0;
-static s16 stickAxis(int raw) {
+// Each connected controller, laid out as on the Vita: Cross accelerates and
+// confirms (3DS A), Circle brakes and backs out (B), Triangle is X and Square
+// is Y; L1/R1 are L/R (L2/R2 as well); the left stick is the Circle Pad.
+// Local player n is the n-th connected controller in port order; the 3DS
+// calls (hidKeysHeld...) read player 1, the hidPad* calls any player.
+namespace {
+struct PadState {
+	u32 held = 0, down = 0, up = 0, repeat = 0;
+	u32 repeatCount = 0, repeatHeld = 0;
+	u32 lastKeys = 0;
+	int lastRx = 0, lastRy = 0;
+	circlePosition circle{};
+	bool connected = false;
+};
+PadState ports[MAX_PADS];
+// Players in port order: playerPort[player] is a port, padCount of them.
+int playerPort[HID_MAX_PLAYERS] = {};
+unsigned padCount = 0;
+u32 repeatDelay = 30, repeatInterval = 6;
+touchPosition touch{};
+bool inputReady = false;
+s16 stickAxis(int raw) {
 	int v = raw - 128;
 	if (v > -24 && v < 24) return 0; // DualShock 3 sticks rest a little off centre.
 	v = v * 156 / 127;
 	return s16(v < -156 ? -156 : v > 156 ? 156 : v);
 }
-extern "C" void hidScanInput(void) {
-	if (!inputReady) { ioPadInit(7); inputReady = true; }
-	padInfo info{};
-	u32 keys = lastKeys;
-	int rx = lastRx, ry = lastRy;
-	bool connected = false;
-	if (ioPadGetInfo(&info) == 0)
-		for (int port = 0; port < MAX_PADS && port < int(info.max); ++port) {
-			if (!info.status[port]) continue;
-			connected = true;
-			padData pad{};
-			// len 0: nothing changed since the last read; keep the previous state.
-			if (ioPadGetData(port, &pad) != 0 || pad.len <= 0) break;
-			const u16 d1 = pad.button[2], d2 = pad.button[3];
-			keys = 0;
-			if (d2 & PAD_CTRL_CROSS) keys |= KEY_A;
-			if (d2 & PAD_CTRL_CIRCLE) keys |= KEY_B;
-			if (d2 & PAD_CTRL_TRIANGLE) keys |= KEY_X;
-			if (d2 & PAD_CTRL_SQUARE) keys |= KEY_Y;
-			if (d2 & (PAD_CTRL_L1 | PAD_CTRL_L2)) keys |= KEY_L;
-			if (d2 & (PAD_CTRL_R1 | PAD_CTRL_R2)) keys |= KEY_R;
-			if (d1 & PAD_CTRL_START) keys |= KEY_START;
-			if (d1 & PAD_CTRL_SELECT) keys |= KEY_SELECT;
-			if (d1 & PAD_CTRL_UP) keys |= KEY_DUP;
-			if (d1 & PAD_CTRL_DOWN) keys |= KEY_DDOWN;
-			if (d1 & PAD_CTRL_LEFT) keys |= KEY_DLEFT;
-			if (d1 & PAD_CTRL_RIGHT) keys |= KEY_DRIGHT;
-			circle.dx = stickAxis(pad.button[6]);
-			circle.dy = s16(-stickAxis(pad.button[7]));
-			rx = stickAxis(pad.button[4]);
-			ry = -stickAxis(pad.button[5]);
-			break;
-		}
-	if (!connected) { keys = 0; circle = {}; rx = ry = 0; }
-	lastKeys = keys; lastRx = rx; lastRy = ry;
+void scanPort(PadState& s, int port, bool connected) {
+	u32 keys = s.lastKeys;
+	int rx = s.lastRx, ry = s.lastRy;
+	padData pad{};
+	// len 0: nothing changed since the last read; keep the previous state.
+	if (connected && ioPadGetData(port, &pad) == 0 && pad.len > 0) {
+		const u16 d1 = pad.button[2], d2 = pad.button[3];
+		keys = 0;
+		if (d2 & PAD_CTRL_CROSS) keys |= KEY_A;
+		if (d2 & PAD_CTRL_CIRCLE) keys |= KEY_B;
+		if (d2 & PAD_CTRL_TRIANGLE) keys |= KEY_X;
+		if (d2 & PAD_CTRL_SQUARE) keys |= KEY_Y;
+		if (d2 & (PAD_CTRL_L1 | PAD_CTRL_L2)) keys |= KEY_L;
+		if (d2 & (PAD_CTRL_R1 | PAD_CTRL_R2)) keys |= KEY_R;
+		if (d1 & PAD_CTRL_START) keys |= KEY_START;
+		if (d1 & PAD_CTRL_SELECT) keys |= KEY_SELECT;
+		if (d1 & PAD_CTRL_UP) keys |= KEY_DUP;
+		if (d1 & PAD_CTRL_DOWN) keys |= KEY_DDOWN;
+		if (d1 & PAD_CTRL_LEFT) keys |= KEY_DLEFT;
+		if (d1 & PAD_CTRL_RIGHT) keys |= KEY_DRIGHT;
+		s.circle.dx = stickAxis(pad.button[6]);
+		s.circle.dy = s16(-stickAxis(pad.button[7]));
+		rx = stickAxis(pad.button[4]);
+		ry = -stickAxis(pad.button[5]);
+	}
+	if (!connected) { keys = 0; s.circle = {}; rx = ry = 0; }
+	s.connected = connected;
+	s.lastKeys = keys; s.lastRx = rx; s.lastRy = ry;
 	// The 3DS HID module reports the Circle Pad as directions past about a quarter throw.
-	if (circle.dx >= 40) keys |= KEY_CPAD_RIGHT;
-	if (circle.dx <= -40) keys |= KEY_CPAD_LEFT;
-	if (circle.dy >= 40) keys |= KEY_CPAD_UP;
-	if (circle.dy <= -40) keys |= KEY_CPAD_DOWN;
+	if (s.circle.dx >= 40) keys |= KEY_CPAD_RIGHT;
+	if (s.circle.dx <= -40) keys |= KEY_CPAD_LEFT;
+	if (s.circle.dy >= 40) keys |= KEY_CPAD_UP;
+	if (s.circle.dy <= -40) keys |= KEY_CPAD_DOWN;
 	if (rx >= 40) keys |= KEY_CSTICK_RIGHT;
 	if (rx <= -40) keys |= KEY_CSTICK_LEFT;
 	if (ry >= 40) keys |= KEY_CSTICK_UP;
 	if (ry <= -40) keys |= KEY_CSTICK_DOWN;
-	down = keys & ~held;
-	up = held & ~keys;
-	held = keys;
+	s.down = keys & ~s.held;
+	s.up = s.held & ~keys;
+	s.held = keys;
 	// libctru repeat: the held set fires again after `delay` scans, then every `interval`.
-	repeat = down;
-	if (held && held == repeatHeld) {
-		if (++repeatCount >= repeatDelay) { repeat = held; repeatCount = repeatDelay - repeatInterval; }
-	} else { repeatCount = 0; repeatHeld = held; }
+	s.repeat = s.down;
+	if (s.held && s.held == s.repeatHeld) {
+		if (++s.repeatCount >= repeatDelay) { s.repeat = s.held; s.repeatCount = repeatDelay - repeatInterval; }
+	} else { s.repeatCount = 0; s.repeatHeld = s.held; }
 }
-extern "C" u32 hidKeysHeld(void) { return held; }
-extern "C" u32 hidKeysDown(void) { return down; }
-extern "C" u32 hidKeysUp(void) { return up; }
-extern "C" u32 hidKeysDownRepeat(void) { return repeat; }
+const PadState* player(unsigned index) {
+	static const PadState none{};
+	return index < padCount ? &ports[playerPort[index]] : &none;
+}
+} // namespace
+extern "C" void hidScanInput(void) {
+	if (!inputReady) { ioPadInit(7); inputReady = true; }
+	padInfo info{};
+	const bool ok = ioPadGetInfo(&info) == 0;
+	padCount = 0;
+	for (int port = 0; port < MAX_PADS; ++port) {
+		const bool connected = ok && port < int(info.max) && info.status[port];
+		scanPort(ports[port], port, connected);
+		if (connected && padCount < HID_MAX_PLAYERS) playerPort[padCount++] = port;
+	}
+}
+extern "C" u32 hidKeysHeld(void) { return player(0)->held; }
+extern "C" u32 hidKeysDown(void) { return player(0)->down; }
+extern "C" u32 hidKeysUp(void) { return player(0)->up; }
+extern "C" u32 hidKeysDownRepeat(void) { return player(0)->repeat; }
 extern "C" void hidSetRepeatParameters(u32 delay, u32 interval) { repeatDelay = delay; repeatInterval = interval ? interval : 1; }
-extern "C" void hidCircleRead(circlePosition* pos) { *pos = circle; }
+extern "C" void hidCircleRead(circlePosition* pos) { *pos = player(0)->circle; }
 extern "C" void hidTouchRead(touchPosition* pos) { *pos = touch; }
+extern "C" unsigned hidPadCount(void) { return padCount; }
+extern "C" u32 hidPadKeysHeld(unsigned player) { return ::player(player)->held; }
+extern "C" u32 hidPadKeysDown(unsigned player) { return ::player(player)->down; }
+extern "C" u32 hidPadKeysDownRepeat(unsigned player) { return ::player(player)->repeat; }
+extern "C" void hidPadCircleRead(unsigned player, circlePosition* pos) { *pos = ::player(player)->circle; }
 
 // ---- Display -----------------------------------------------------------------
 namespace c3dps3 { void initDisplay(); void waitVblank(); }

@@ -155,7 +155,8 @@ UiAction MenuState::input(UiInput key){
   case UiPage::Intro:case UiPage::License:enter(UiPage::Title);break;
   case UiPage::MainMenu:enter(UiPage::License);break;
   case UiPage::Mode:enter(UiPage::MainMenu);break;
-  case UiPage::EngineClass:case UiPage::VSMode:case UiPage::BattleMode:enter(UiPage::Mode);break;
+  case UiPage::EngineClass:enter(selection.players>1?UiPage::MainMenu:UiPage::Mode);if(selection.players>1)cursor=selection.players-1;break;
+  case UiPage::VSMode:case UiPage::BattleMode:enter(UiPage::Mode);break;
   case UiPage::Character:
    enter(selection.mode==UiMode::GrandPrix?UiPage::EngineClass:selection.mode==UiMode::VS?UiPage::VSMode:selection.mode==UiMode::Battle?UiPage::BattleMode:UiPage::Mode);break;
   case UiPage::Vehicle:enter(UiPage::Character);break;
@@ -196,7 +197,21 @@ UiAction MenuState::input(UiInput key){
  case UiPage::Intro:enter(UiPage::Title);break;
  case UiPage::Title:enter(UiPage::License);break;
  case UiPage::License:selection.license=cursor;enter(UiPage::MainMenu);break;
- case UiPage::MainMenu:if(cursor==0)enter(UiPage::Mode);else unavailable=true;break;
+ case UiPage::MainMenu:
+  // Multiplayer 2P/3P/4P (controls 1-3): a splitscreen Grand Prix. Each player
+  // picks a character, vehicle and drift on their own grid (main.cpp).
+  // The Vita has one set of controls: splitscreen is the PS3's.
+  {
+#ifdef __vita__
+  constexpr bool splitscreen=false;
+#else
+  constexpr bool splitscreen=true;
+#endif
+  if(cursor==0){selection.players=1;enter(UiPage::Mode);}
+  else if(splitscreen&&cursor<=3){selection.players=cursor+1;selection.mode=UiMode::GrandPrix;enter(UiPage::EngineClass);}
+  else unavailable=true;
+  }
+  break;
  case UiPage::Mode:
   if(!raceMode(UiMode(cursor))){unavailable=true;break;}
   selection.mode=UiMode(cursor);

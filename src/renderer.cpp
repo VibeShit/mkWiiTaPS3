@@ -259,14 +259,16 @@ bool Renderer::init(){
     sprites_=static_cast<Vertex*>(linearAlloc(kSpriteCapacity*6*sizeof(Vertex)));if(!sprites_)return fail();
     text_=static_cast<Vertex*>(linearAlloc(kTextVertices*sizeof(Vertex)));if(!text_)return fail();
     particles_=static_cast<Vertex*>(linearAlloc(DriftEffects::Capacity*12*sizeof(Vertex)));if(!particles_)return fail();
-    effectVertices_=linearAlloc(kEffectVertices*sizeof(ef::DrawVertex));if(!effectVertices_)return fail();
+    for(auto& v:effectVertices_){v=linearAlloc(kEffectVertices*sizeof(ef::DrawVertex));if(!v)return fail();}
     if(shader_->numDVLE<2)return fail();
     shaderProgramInit(&effectProgram_);effectProgramReady_=true;
     if(R_FAILED(shaderProgramSetVsh(&effectProgram_,&shader_->DVLE[1])))return fail();
     effectProjectionLoc_=shaderInstanceGetUniformLocation(effectProgram_.vertexShader,"projection");
     if(effectProjectionLoc_<0)return fail();
-    if(!C3D_TexInit(&effectLookup_,ef::DrawList::LookupSize,ef::DrawList::LookupSize,GPU_RGBA8))return fail();
-    C3D_TexSetFilter(&effectLookup_,GPU_NEAREST,GPU_NEAREST);C3D_TexSetWrap(&effectLookup_,GPU_CLAMP_TO_EDGE,GPU_CLAMP_TO_EDGE);
+    for(auto& lookup:effectLookup_){
+        if(!C3D_TexInit(&lookup,ef::DrawList::LookupSize,ef::DrawList::LookupSize,GPU_RGBA8))return fail();
+        C3D_TexSetFilter(&lookup,GPU_NEAREST,GPU_NEAREST);C3D_TexSetWrap(&lookup,GPU_CLAMP_TO_EDGE,GPU_CLAMP_TO_EDGE);
+    }
     effectDraw_=new EffectDrawState;
     std::memset(white_.data,255,8*8*4);C3D_TexFlush(&white_);
     Mtx_PerspTilt(&projection_,C3D_AngleFromDegrees(55.f),display::Aspect,10.f,400000.f,false);
@@ -382,9 +384,9 @@ void Renderer::shutdown(){
     retired_.clear();
     LightLock_Lock(&textureCache().lock);textureCache().entries.clear();LightLock_Unlock(&textureCache().lock);
     linearFree(particles_);particles_=nullptr;
-    linearFree(effectVertices_);effectVertices_=nullptr;
-    if(effectLookup_.data)C3D_TexDelete(&effectLookup_);
-    effectLookup_={};delete effectDraw_;effectDraw_=nullptr;
+    for(auto& v:effectVertices_){linearFree(v);v=nullptr;}
+    for(auto& lookup:effectLookup_){if(lookup.data)C3D_TexDelete(&lookup);lookup={};}
+    delete effectDraw_;effectDraw_=nullptr;
     if(effectProgramReady_)shaderProgramFree(&effectProgram_);
     effectProgramReady_=false;effectProgram_={};
     linearFree(sprites_);sprites_=nullptr;linearFree(overlay_);overlay_=nullptr;
@@ -459,10 +461,11 @@ void Renderer::screenDepthNow(float parallax){
 void Renderer::beginFrame(){
     // The right eye repeats the left eye's buffer offsets: its sprites, text,
     // overlays, sparks and effect vertices reuse the data the left eye wrote.
-    screenWidth_=display::Width;screenParallax_=0;
+    screenWidth_=display::Width;screenParallax_=0;screenView_={};c3dport_SetCullSwap(false);
     spriteBase_=sprites_;spriteCapacity_=kSpriteCapacity;topSpriteCount_=0;bottomPass_=false;
     spriteCount_=0;spriteRunFirst_=0;spriteRunTexture_=nullptr;spriteStateReady_=false;
     menuIconDrawCount_=0;
+    if(!eye_)effectSlot_=0;
     textCount_=0;
     overlayCount_=0;
     // The local SDK permits unbinding all units, including inherited samplers.
@@ -507,6 +510,23 @@ void Renderer::beginFrame(){
     C3D_DepthTest(true,GPU_GEQUAL,GPU_WRITE_ALL);C3D_AlphaBlend(GPU_BLEND_ADD,GPU_BLEND_ADD,GPU_SRC_ALPHA,GPU_ONE_MINUS_SRC_ALPHA,GPU_ONE,GPU_ONE_MINUS_SRC_ALPHA);
     if(!eye_)stats_.triangles=stats_.drawCalls=stats_.culledTriangles=stats_.culledSubmeshes=0;
 }
+void Renderer::viewNow(const C3D_Mtx& view,const C3D_Mtx& projection,const ScreenView& screen){
+    // Earlier sprite runs draw in the previous view.
+    flushSprites();
+    screenView_=screen;
+    view_=view;projection_=eyeProjection(projection);
+    C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,projectionLoc_,&projection_);
+    // The target is portrait: its x runs up the screen, its y right to left.
+    C3D_SetViewport(unsigned(std::lround(240.f-screen.y-screen.h)),unsigned(std::lround(display::Width-screen.x-screen.w)),
+                    unsigned(std::lround(screen.h)),unsigned(std::lround(screen.w)));
+    screenWidth_=screen.canvas;screenParallax_=0;
+    c3dport_SetCullSwap(screen.mirror);
+    Vec3 sun=normalized(Vec3{0.3f,0.8f,0.5f});
+    light_={view_.r[0].x*sun.x+view_.r[0].y*sun.y+view_.r[0].z*sun.z,
+            view_.r[1].x*sun.x+view_.r[1].y*sun.y+view_.r[1].z*sun.z,
+            view_.r[2].x*sun.x+view_.r[2].y*sun.y+view_.r[2].z*sun.z};
+    retailView();
+}
 C3D_Mtx ViewFrustum::cameraFacing(Vec3 position,float scale) const {
     C3D_Mtx transform;Mtx_Identity(&transform);
     for(unsigned row=0;row<3;++row)for(unsigned col=0;col<3;++col)transform.r[row].c[3-col]=view.r[col].c[3-row]*scale;
@@ -531,7 +551,7 @@ ClipFrustum objectFrustum(const C3D_Mtx& view,const C3D_Mtx& projection,const C3
     return ClipFrustum(rows);
 }
 }
-ClipFrustum ViewFrustum::model(const C3D_Mtx& transform) const {return objectFrustum(view,projection,transform);}
+ClipFrustum ViewFrustum::model(const C3D_Mtx& transform) const {return all?ClipFrustum{}:objectFrustum(view,projection,transform);}
 ClipFrustum Renderer::modelFrustum(const C3D_Mtx& transform) const {return objectFrustum(mainView_,cullProjection_,transform);}
 bool Renderer::visible(const Model& model,const C3D_Mtx& transform) const {
     return modelFrustum(transform).intersects({model.minimum,model.maximum});
@@ -541,7 +561,8 @@ void Renderer::drawAtScreenNow(const Model& model,const Vertex* vertices,const C
     const C3D_Mtx original=projection_;
     C3D_Mtx tilt;Mtx_PerspTilt(&tilt,C3D_AngleFromDegrees(90.f),1.f,1.f,2.f,false);
     const float vertical=(tilt.r[0].y<0?-1.f:1.f)*(120.f-y)/120.f;
-    const float horizontal=(tilt.r[1].x<0?-1.f:1.f)*(x-display::CenterX)/display::CenterX;
+    const float centerX=screenWidth_*.5f;
+    const float horizontal=(tilt.r[1].x<0?-1.f:1.f)*(x-centerX)/centerX;
     for(unsigned col=0;col<4;++col){
         projection_.r[0].c[col]=scaleY*original.r[0].c[col]+vertical*original.r[3].c[col];
         projection_.r[1].c[col]=scaleX*original.r[1].c[col]+horizontal*original.r[3].c[col];
@@ -566,7 +587,7 @@ void Renderer::drawMenuIconNow(const Model& model,const Vertex* vertices,const C
     const float layer=.9f+.0005f*float(std::min(menuIconDrawCount_++,128u));
     for(unsigned col=0;col<4;++col){
         projection_.r[0].c[col]*=(480.f/44.f)*(height/240.f);
-        projection_.r[1].c[col]*=(608.f/192.f)*(width/display::Width);
+        projection_.r[1].c[col]*=(608.f/192.f)*(width/screenWidth_);
         // Captured-image panes composite in draw order, including the offset
         // shadow and OK glow of the same vehicle. Give each its own near-depth
         // interval while preserving all relative depth inside this machine.
@@ -581,10 +602,13 @@ void Renderer::drawMenuIconNow(const Model& model,const Vertex* vertices,const C
     }
     // The pane's crop moves with the eye's image of the pane.
     const float x=q.x+(execStereo_.active()?(eye_?.5f:-.5f)*screenParallax_:0.f);
-    const unsigned l=unsigned(std::clamp(std::floor(240.f-q.y-q.h),0.f,240.f));
-    const unsigned r=unsigned(std::clamp(std::ceil(240.f-q.y),0.f,240.f));
-    const unsigned t=unsigned(std::clamp(std::floor(display::Width-x-q.w),0.f,display::Width));
-    const unsigned b=unsigned(std::clamp(std::ceil(display::Width-x),0.f,display::Width));
+    // The pane in screen units: through the current view's canvas.
+    const float kx=screenView_.w/screenView_.canvas,ky=screenView_.h/240.f;
+    const float sx=screenView_.x+x*kx,sy=screenView_.y+q.y*ky,sw=q.w*kx,sh=q.h*ky;
+    const unsigned l=unsigned(std::clamp(std::floor(240.f-sy-sh),0.f,240.f));
+    const unsigned r=unsigned(std::clamp(std::ceil(240.f-sy),0.f,240.f));
+    const unsigned t=unsigned(std::clamp(std::floor(display::Width-sx-sw),0.f,display::Width));
+    const unsigned b=unsigned(std::clamp(std::ceil(display::Width-sx),0.f,display::Width));
     if(l<r&&t<b){
         C3D_SetScissor(GPU_SCISSOR_NORMAL,l,t,r,b);
         courseLighting_=false;menuIconLayer_=true;menuIconAlpha_=q.alpha;
@@ -1180,25 +1204,28 @@ void Renderer::effectListNow(const RaceEffects& effects,const ef::DrawList& list
     const size_t vertexCount=ef::triangleVertexCount(list.vertices.size(),kEffectVertices);
     if(!vertexCount)return;
     flushSprites();
+    // This view's slot (the last one is reused past kEffectSlots views).
+    const unsigned slot=std::min(effectSlot_++,kEffectSlots-1);
+    void* const effectVertices=effectVertices_[slot];C3D_Tex& effectLookup=effectLookup_[slot];
     // Both eyes draw the list built from the centre camera; the left eye uploads it.
     if(!eye_){
-    std::memcpy(effectVertices_,list.vertices.data(),vertexCount*sizeof(ef::DrawVertex));
-    flushGpuData(effectVertices_,vertexCount*sizeof(ef::DrawVertex));
+    std::memcpy(effectVertices,list.vertices.data(),vertexCount*sizeof(ef::DrawVertex));
+    flushGpuData(effectVertices,vertexCount*sizeof(ef::DrawVertex));
     // Lookup texels in index order are already in tiled order (8x8 Morton tiles).
-    uint8_t* texels=static_cast<uint8_t*>(effectLookup_.data);
+    uint8_t* texels=static_cast<uint8_t*>(effectLookup.data);
     for(size_t i=0;i<list.lookup.size();++i){
         const uint32_t c=list.lookup[i];
         texels[i*4+0]=uint8_t(c>>24);texels[i*4+1]=uint8_t(c>>16);texels[i*4+2]=uint8_t(c>>8);texels[i*4+3]=uint8_t(c);
     }
-    C3D_TexFlush(&effectLookup_);
+    C3D_TexFlush(&effectLookup);
     }
     C3D_BindProgram(&effectProgram_);
     C3D_FVUnifMtx4x4(GPU_VERTEX_SHADER,effectProjectionLoc_,&projection_);
     C3D_AttrInfo* attr=C3D_GetAttrInfo();AttrInfo_Init(attr);
     static_assert(sizeof(ef::DrawVertex)==44,"position 3f, unit 0 3f, units 1 and 2 4f, colour 4ub");
     AttrInfo_AddLoader(attr,0,GPU_FLOAT,3);AttrInfo_AddLoader(attr,1,GPU_FLOAT,3);AttrInfo_AddLoader(attr,2,GPU_FLOAT,4);AttrInfo_AddLoader(attr,3,GPU_UNSIGNED_BYTE,4);
-    auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,effectVertices_,sizeof(ef::DrawVertex),4,0x3210);
-    C3D_TexBind(2,&effectLookup_);
+    auto* buf=C3D_GetBufInfo();BufInfo_Init(buf);BufInfo_Add(buf,effectVertices,sizeof(ef::DrawVertex),4,0x3210);
+    C3D_TexBind(2,&effectLookup);
     C3D_TexEnvBufColor(0);
     // Unit 0 in projection mode for projected layers; bound by pointer until the draw.
     C3D_Tex projected{};
@@ -1278,8 +1305,9 @@ void Renderer::cinemaBarsNow(float topHeight,float bottomHeight,float opacity){
     Vertex* vertices=reserveOverlay(12);
     const auto alpha=static_cast<uint8_t>(std::round(std::clamp(opacity,0.f,1.f)*255.f));
     auto rectangle=[&](int first,float top,float bottom){
-        const Vec3 positions[6]={{0,top,0},{display::Width,top,0},{display::Width,bottom,0},
-                                 {0,top,0},{display::Width,bottom,0},{0,bottom,0}};
+        const float W=screenWidth_;
+        const Vec3 positions[6]={{0,top,0},{W,top,0},{W,bottom,0},
+                                 {0,top,0},{W,bottom,0},{0,bottom,0}};
         for(int i=0;i<6;++i)vertices[first+i]={positions[i],{0,0,1},{0,0},{0,0},{0,0,0,alpha}};
     };
     if(!eye_){
@@ -1304,8 +1332,9 @@ void Renderer::screenFadeNow(float opacity,bool white){
     flushSprites();
     const auto alpha=static_cast<uint8_t>(std::round(std::clamp(opacity,0.f,1.f)*255.f));
     const uint8_t value=white?255:0;
-    const Vec3 positions[6]={{0,0,0},{display::Width,0,0},{display::Width,240,0},
-                             {0,0,0},{display::Width,240,0},{0,240,0}};
+    const float W=screenWidth_;
+    const Vec3 positions[6]={{0,0,0},{W,0,0},{W,240,0},
+                             {0,0,0},{W,240,0},{0,240,0}};
     Vertex* fade=reserveOverlay(6);
     if(!eye_){
         for(int i=0;i<6;++i)fade[i]={positions[i],{0,0,1},{0,0},{0,0},{value,value,value,alpha}};
@@ -1682,6 +1711,7 @@ void Renderer::endNow(){
     endEyeNow();
     // FrameEnd transfers each eye to these (the right half only in 3D mode).
     if(execStereo_.active())for(unsigned eye=0;eye<2;++eye)presented_[eye]=gfxGetFramebuffer(GFX_TOP,eye?GFX_RIGHT:GFX_LEFT,nullptr,nullptr);
+    c3dport_SetCullSwap(false);
     stats_.commandUsage=C3D_GetCmdBufUsage();C3D_FrameEnd(GX_CMDLIST_FLUSH);
 }
 bool Renderer::captureTop(uint8_t* rgb,unsigned eye){

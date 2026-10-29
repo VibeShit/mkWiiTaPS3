@@ -17,6 +17,7 @@
 #include <vector>
 #include <3ds.h>
 #include <algorithm>
+#include <type_traits>
 #include <cmath>
 #include <cstdio>
 #include <new>
@@ -421,7 +422,7 @@ unsigned tiledTexel(unsigned x,unsigned y,unsigned width){
     return ((y>>3)*(width>>3)+(x>>3))*64+m;
 }
 }
-void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
+void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view,bool large){
     auto& m=*impl_;
     if(!m.target)return;
     namespace K=Kinoko;
@@ -476,6 +477,12 @@ void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
         m.miniMap.ready=true;
     }
     const bool mapShown=m.wiiMap||m.miniMap.ready;
+    // The generated map's placement, put back after a large call.
+    struct Restore {
+        std::remove_reference_t<decltype(m)>* map=nullptr;float ox=0,oy=0,scale=0,w=0,h=0;
+        ~Restore(){if(map){map->miniOx=ox;map->miniOy=oy;map->miniScale=scale;map->miniW=w;map->miniH=h;}}
+    } restore;
+    // Copied when drawn: splitscreen frames draw the map once per view.
     auto* quads=m.miniQuad[renderer.recordingFrame()&1];
     auto set=[](Renderer::MaterialQuad& q,float x0,float y0,float x1,float y1,float u0,float v0,float u1,float v1,uint32_t color){
         q.x[0]=x0;q.y[0]=y0;q.x[1]=x1;q.y[1]=y0;q.x[2]=x0;q.y[2]=y1;q.x[3]=x1;q.y[3]=y1;
@@ -487,13 +494,15 @@ void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
         // The Wii's place for it (map.brctr map_1: x 250, y -65, scale 1.3 on the
         // 832x456 canvas, right-anchored; a 220-unit pane). The course spans
         // about three quarters of the pane, as the Wii shows it.
-        constexpr float S=240.f/456.f,Box=220.f*1.3f*S*.72f;
-        const float cx=display::Width-(416.f-250.f)*S,cy=(228.f+65.f)*S;
+        // Large (splitscreen's spare quadrant): the whole course in the view.
+        constexpr float S=240.f/456.f;
+        const float Box=large?200.f:220.f*1.3f*S*.72f;
+        const float cx=large?renderer.canvasCenterX():renderer.canvasWidth()-(416.f-250.f)*S,cy=large?120.f:(228.f+65.f)*S;
         const float s=std::min(Box/m.wiiW,Box/m.wiiH),w=m.wiiW*s,h=m.wiiH*s,ox=cx-w*.5f,oy=cy-h*.5f;
         // See-through as the Wii's (about two thirds opaque).
         set(quads[0],ox,oy,ox+w,oy+h,0,0,float(m.wiiW)/m.wiiPW,float(m.wiiH)/m.wiiPH,0xffffffa8u);
         if(m.mirror)flipQuad(quads[0],cx,false);
-        renderer.drawScreenMaterialQuadsInPlace(&m.wiiMapTexture,quads,1,0x00000000u,0xffffffffu);
+        renderer.drawScreenMaterialQuads(&m.wiiMapTexture,quads,1,0x00000000u,0xffffffffu);
         // The faces below place racers through the same world-to-screen map.
         const float pad=MiniRoad+MiniEdge+1.f;
         m.miniX0=m.wiiX0;m.miniZ0=m.wiiZ0;m.miniScale=s/m.wiiUpt;m.miniOx=ox-pad;m.miniOy=oy-pad;
@@ -511,14 +520,23 @@ void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
             q.x[0]=mx-ux*half-nx;q.y[0]=my-uy*half-ny;q.x[1]=mx+ux*half-nx;q.y[1]=my+uy*half-ny;
             q.x[2]=mx-ux*half+nx;q.y[2]=my-uy*half+ny;q.x[3]=mx+ux*half+nx;q.y[3]=my+uy*half+ny;
             if(m.mirror)flipQuad(q,cx,true);
-            renderer.drawScreenMaterialQuadsInPlace(&m.wiiStart,&q,1,0x00000000u,0xffffffffu);
+            renderer.drawScreenMaterialQuads(&m.wiiStart,&q,1,0x00000000u,0xffffffffu);
         }
         }
     }else{
+        if(large){
+            // Scaled about the view's centre for this call; the faces below
+            // read the same placement, restored when the call ends.
+            const float side=std::max(m.miniW,m.miniH),k=200.f/side,pad=MiniRoad+MiniEdge+1.f;
+            const float ox=renderer.canvasCenterX()-m.miniW*k*.5f,oy=120.f-m.miniH*k*.5f;
+            restore.map=&m;restore.ox=m.miniOx;restore.oy=m.miniOy;restore.scale=m.miniScale;restore.w=m.miniW;restore.h=m.miniH;
+            m.miniOx=ox+(k-1)*pad;m.miniOy=oy+(k-1)*pad;m.miniScale*=k;
+            m.miniW=m.miniW*k-2*(k-1)*pad;m.miniH=m.miniH*k-2*(k-1)*pad;
+        }
         const float side=std::max(m.miniW,m.miniH);
         set(quads[0],m.miniOx,m.miniOy,m.miniOx+side,m.miniOy+side,0,0,1,1,0xffffffffu);
         if(m.mirror)flipQuad(quads[0],m.miniOx+m.miniW*.5f,false);
-        renderer.drawScreenMaterialQuadsInPlace(&m.miniMap,quads,1,0x00000000u,0xffffffffu);
+        renderer.drawScreenMaterialQuads(&m.miniMap,quads,1,0x00000000u,0xffffffffu);
     }
     // Every racer's face where it is, the Wii's way: the others small, worst
     // position first; the local racer last, larger, with a black rim.
@@ -527,7 +545,7 @@ void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
     const float aw=RaceMapAtlasSize[0],ah=RaceMapAtlasSize[1];
     if(mapShown){
     float miniAxis=m.miniOx+m.miniW*.5f;
-    if(m.wiiMap){constexpr float S=240.f/456.f;miniAxis=display::Width-(416.f-250.f)*S;}
+    if(m.wiiMap){constexpr float S=240.f/456.f;miniAxis=large?renderer.canvasCenterX():renderer.canvasWidth()-(416.f-250.f)*S;}
     std::array<const BottomRacer*,12> order{};unsigned n=0;const BottomRacer* local=nullptr;
     for(unsigned i=0;i<std::min(view.racers,12u);++i){if(view.racer[i].local)local=&view.racer[i];else order[n++]=&view.racer[i];}
     std::sort(order.begin(),order.begin()+n,[](const BottomRacer* a,const BottomRacer* b){return a->rank>b->rank;});
@@ -562,20 +580,20 @@ void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
         quad(size*.5f,0xffffffffu);
     };
     auto rim=[](const BottomRacer& r,bool local){constexpr uint32_t Team[2]={0xe82828ffu,0x2870ffffu};return r.team<2?Team[r.team]:local?0x000000ffu:0u;};
-    for(unsigned i=0;i<n;++i)face(*order[i],MiniOtherFace,rim(*order[i],false));
+    for(unsigned i=0;i<n;++i)face(*order[i],large?MiniFace:MiniOtherFace,rim(*order[i],false));
     if(local)face(*local,MiniFace,rim(*local,true));
     }
     // CtrlRaceTime at the top right, the Wii's single-player place
     // (time_number.brctr CtrlRaceTime_1: x 188, y 181, scale 1 on the 832x456
     // canvas, right-anchored), above the lap counter (CtrlRaceLap_1_0).
-    if(view.timerVisible){
+    if(view.timerVisible&&!large){
         unsigned ms=view.milliseconds,minutes=ms/60000,seconds=ms/1000%60,milli=ms%1000;
         if(minutes>99){minutes=99;seconds=59;milli=999;}
         const unsigned digit[7]={minutes/10,minutes%10,seconds/10,seconds%10,milli/100,milli/10%10,milli%10};
         const RaceMapRect* art[10]={&RaceMapDigits[digit[0]],&RaceMapDigits[digit[1]],&RaceMapColon,&RaceMapDigits[digit[2]],&RaceMapDigits[digit[3]],
                                     &RaceMapDot,&RaceMapDigits[digit[4]],&RaceMapDigits[digit[5]],&RaceMapDigits[digit[6]],&RaceMapTimeLabel};
         constexpr float S=240.f/456.f;
-        const float ox=display::Width-(416.f-188.f)*S,oy=(228.f-181.f)*S;
+        const float ox=renderer.canvasWidth()-(416.f-188.f)*S,oy=(228.f-181.f)*S;
         for(unsigned i=0;i<10;++i){
             const auto& p=RaceTimerPanes[i];const auto& r=*art[i];
             const float x=ox+p.x*S,y=oy-p.y*S,hw=p.w*.5f*S,hh=p.h*.5f*S;
@@ -584,6 +602,6 @@ void RaceBottomScreen::drawMini(Renderer& renderer,const BottomView& view){
             for(unsigned k=0;k<4;++k)q.color[k]=TimerGold[k];
         }
     }
-    renderer.drawScreenMaterialQuadsInPlace(&m.atlas,quads+1,count-1,0x00000000u,0xffffffffu);
+    renderer.drawScreenMaterialQuads(&m.atlas,quads+1,count-1,0x00000000u,0xffffffffu);
 }
 }

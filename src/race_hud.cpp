@@ -185,11 +185,15 @@ struct RaceHud::Impl {
     std::array<Texture,13> ranks;
     std::array<Texture,10> digits;
     std::array<Texture,HudExtraCount> extras;
+    std::array<Texture,24> names;
+    Texture balloonLine;
     // Battle: the red and blue score digits, the dash and the +/- signs
     // (red plus, red minus, blue plus, blue minus).
     std::array<std::array<Texture,10>,2> battleDigits;
     Texture battleDash;std::array<Texture,4> battleSigns;bool battleReady=false;
-    // Player 0's CtrlRaceItemWindow (USA 0x807e4c54) inside CtrlRaceBase's
+    // Each local player's controls (splitscreen: one set per view).
+    struct Local {
+    // The player's CtrlRaceItemWindow (USA 0x807e4c54) inside CtrlRaceBase's
     // show/hide slide (0x807e2b34): state 1 hidden, 2 showing, 3 shown, 0 hiding.
     struct ItemWindow {
         int state=1;float slide=-1,phase=0;
@@ -210,10 +214,12 @@ struct RaceHud::Impl {
     struct Balloon { int racer=-1,shown=-1;float alpha=0; };
     std::array<Balloon,3> balloons{};
     unsigned balloonTick=0;
-    std::array<Texture,24> names;
-    Texture balloonLine;
     // The chase icon (chase_icon.brlyt): the item shown, its fade and its loop frame.
     struct Chase { ItemKind kind=ItemKind::None;float alpha=0;unsigned loop=0,lastTick=0;bool started=false; } chase;
+    };
+    std::array<Local,MaxLocalPlayers> locals{};
+    unsigned player=0,localCount=1;
+    Local& local(){return locals[player];}
 };
 RaceHud::RaceHud():impl_(std::make_unique<Impl>()){}
 RaceHud::~RaceHud()=default;
@@ -311,7 +317,11 @@ void RaceHud::stepWorld(const RaceItems& items,Vec3 cameraBackward,bool started)
         }
     }
     for(unsigned i=0;i<impl_->previousCloud.size();++i)impl_->previousCloud[i]=items.hud(i).cloud;
-    auto& w=impl_->window;const auto& held=items.hud(0);
+    // Every local player's controls (racer index = local player index).
+    const unsigned current=impl_->player;
+    for(unsigned player=0;player<impl_->localCount;++player){
+    impl_->player=player;
+    auto& w=impl_->local().window;const auto& held=items.hud(player);
     // CtrlRaceItemWindow_calcSelf (0x807e4c54): the inventory item (+0x8c) with its
     // count as the picture variant, else the slot lock (+0x78) with variant 1. The
     // picture (fn_1_35073C 0x8083bea4) varies by count only for Triple Mushrooms
@@ -322,14 +332,14 @@ void RaceHud::stepWorld(const RaceItems& items,Vec3 cameraBackward,bool started)
     // The pop counter is consumed before a picture change can restart it.
     w.popFrame=w.pop;if(w.pop<9)++w.pop;
     // Every Golden Mushroom use restarts the pop (+0x238, set by activateMushroom).
-    const uint16_t uses=items.mushroomUses(0);
+    const uint16_t uses=items.mushroomUses(player);
     if(held.item==ItemKind::GoldenMushroom&&uses!=w.mushroomUses)w.pop=0;
     w.mushroomUses=uses;
     if(held.roulette){
         // Faces: next = the newest picture, curr = the one it replaced.
         if(!w.roulette){w.curr=ItemKind::None;w.next=held.rouletteIcon;}
         else if(held.rouletteIcon!=w.next){w.curr=w.next;w.next=held.rouletteIcon;}
-        w.phase=items.roulette(0).phase;w.picture=~0u;
+        w.phase=items.roulette(player).phase;w.picture=~0u;
     }else if(displayed!=ItemKind::None){
         const uint8_t charges=shown.variant;
         const unsigned picture=unsigned(displayed)|(unsigned(charges)<<9);
@@ -349,10 +359,15 @@ void RaceHud::stepWorld(const RaceItems& items,Vec3 cameraBackward,bool started)
         }
     };
     advance(w.state,w.slide);
-    auto& b=impl_->base;
+    auto& b=impl_->local().base;
     if(started&&b.state!=3)b.state=2;
     advance(b.state,b.slide);
+    }
+    impl_->player=current;
 }
+void RaceHud::setLocalPlayers(unsigned count){impl_->localCount=std::clamp(count,1u,MaxLocalPlayers);impl_->player=std::min(impl_->player,impl_->localCount-1);}
+void RaceHud::setPlayer(unsigned player){impl_->player=std::min(player,impl_->localCount-1);}
+unsigned RaceHud::player() const{return impl_->player;}
 void RaceHud::drawWorld(Renderer& renderer,const RaceItems& items,Vec3 viewer,unsigned tick){
     std::array<bool,21> needed{};
     for(const auto& actor:items.actors())if(actor.active&&unsigned(actor.kind)<needed.size()&&
@@ -480,7 +495,7 @@ void RaceHud::drawBattle(Renderer& renderer,float lift){
         renderer.drawScreenSpriteRegion(t,x,y,w,h,0,0,sw/float(t.gpu.width),sh/float(t.gpu.height),alpha);
     };
     auto digits=[&](unsigned value,char (&text)[4]){return std::snprintf(text,sizeof text,"%u",std::min(value,999u));};
-    const float dx=display::WideExtra;
+    const float dx=renderer.canvasWidth()-400.f;
     const BattleHudRect red[3]={BattleHudTeam_red_a,BattleHudTeam_red_b,BattleHudTeam_red_c};
     const BattleHudRect blue[3]={BattleHudTeam_blue_a,BattleHudTeam_blue_b,BattleHudTeam_blue_c};
     auto teamNumber=[&](unsigned value,unsigned team,const BattleHudRect* slots,bool right){
@@ -500,7 +515,7 @@ void RaceHud::drawBattle(Renderer& renderer,float lift){
         // Pops in over 10 frames, rises a little and fades out at the end.
         const float a=float(battle.popupAge);
         const float scale=a<6?.4f+.8f*a/6.f:a<10?1.2f-.2f*(a-6.f)/4.f:1.f;
-        const float alpha=a>45?std::max(0.f,1.f-(a-45.f)/15.f):1.f,rise=a*.25f,cx=display::CenterX-200.f;
+        const float alpha=a>45?std::max(0.f,1.f-(a-45.f)/15.f):1.f,rise=a*.25f,cx=renderer.canvasCenterX()-200.f;
         const unsigned sign=team*2+(battle.popup<0?1:0);
         auto scaled=[&](const BattleHudRect& r,const Texture& t,float sw,float sh){
             const float w=r.w*scale,h=r.h*scale;sprite(t,cx+r.x+(r.w-w)*.5f,r.y-rise+(r.h-h)*.5f,w,h,sw,sh,alpha);
@@ -511,7 +526,7 @@ void RaceHud::drawBattle(Renderer& renderer,float lift){
 }
 void RaceHud::drawBattleTotals(Renderer& renderer,unsigned red,unsigned blue,unsigned winner,unsigned tick){
     auto& m=*impl_;if(!m.battleReady)return;
-    const float cx=display::CenterX-200.f;
+    const float cx=renderer.canvasCenterX()-200.f;
     const float pulse=1.f+.12f*std::sin(float(tick)*.15f);
     auto sprite=[&](const Texture& t,const BattleHudRect& r,float scale){
         if(!t.ready)return;
@@ -527,7 +542,10 @@ void RaceHud::drawBattleTotals(Renderer& renderer,unsigned red,unsigned blue,uns
     number(red,0,reds,true);sprite(m.battleDash,BattleHudTotal_hifun,1.f);number(blue,1,blues,false);
 }
 void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned stage,unsigned timer,unsigned rank,unsigned lap,bool finished,unsigned tick,int finishFrame,float exitSlide){
-    const auto& held=items.hud(0);
+    const unsigned me=impl_->player;
+    const auto& held=items.hud(me);
+    // Anchors on the current view's canvas (splitscreen: 2P strips are wider).
+    const float canvasW=renderer.canvasWidth(),centerX=renderer.canvasCenterX(),wideExtra=canvasW-400.f;
     auto sprite=[&](const Texture& texture,const RaceSprite& art,HudRect rect,float alpha=1.f,uint32_t tint=0xffffffffu){
         renderer.drawScreenSprite(texture,rect.x,rect.y,rect.w,rect.h,art.u,art.v,alpha,tint);
     };
@@ -544,7 +562,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
             // projected with the active native camera. Source growth/fade450f.
             const float fullSize=240.f*HudInkHalfExtent/(HudInkDepth*std::tan(renderer.fov()*3.14159265358979323846f/360.f));
             const float w=fullSize*ink.scaleX,h=fullSize*ink.scaleY;
-            sprite(impl_->extras[HudInk],HudExtras[HudInk],{display::CenterX-w/2,120-h/2,w,h},ink.alpha,0x000000ffu);
+            sprite(impl_->extras[HudInk],HudExtras[HudInk],{centerX-w/2,120-h/2,w,h},ink.alpha,0x000000ffu);
         }
     }
     // Original single-player BRCTR corner anchors and BRLYT pane sizes. 3DS is
@@ -554,7 +572,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // the farthest, and fades each pane 30 frames. Before GO (timer > 180) the
     // player's own balloon shows; during the race others from timer 420.
     {
-        auto& bs=impl_->balloons;
+        auto& bs=impl_->local().balloons;
         const auto& scenario=Kinoko::System::RaceConfig::Instance()->raceScenario();
         const unsigned count=std::min<unsigned>(scenario.playerCount,12);
         auto* karts=Kinoko::Kart::KartObjectManager::Instance();
@@ -563,17 +581,17 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
         std::array<Seen,12> seen{};
         for(unsigned i=0;i<count;++i){
             auto& s=seen[i];
-            s.ok=renderer.projectTop(anchor(i),s.x,s.y,s.z)&&s.z<=0&&s.z>=-7500.f&&s.x>=0&&s.x<=display::Width;
+            s.ok=renderer.projectTop(anchor(i),s.x,s.y,s.z)&&s.z<=0&&s.z>=-7500.f&&s.x>=0&&s.x<=canvasW;
         }
         if(stage<2){
             for(auto& b:bs)b.racer=-1;
-            if(timer>180&&seen[0].ok)bs[0].racer=0;
+            if(timer>180&&seen[me].ok)bs[0].racer=int(me);
         }else if(timer<420||finished){
             for(auto& b:bs)b.racer=-1;
         }else{
-            for(auto& b:bs)if(b.racer==0||(b.racer>0&&(unsigned(b.racer)>=count||!seen[b.racer].ok)))b.racer=-1;
-            for(unsigned i=1;i<count;++i){
-                if(!seen[i].ok||std::any_of(bs.begin(),bs.end(),[&](const auto& b){return b.racer==int(i);}))continue;
+            for(auto& b:bs)if(b.racer==int(me)||(b.racer>=0&&(unsigned(b.racer)>=count||!seen[b.racer].ok)))b.racer=-1;
+            for(unsigned i=0;i<count;++i){
+                if(i==me||!seen[i].ok||std::any_of(bs.begin(),bs.end(),[&](const auto& b){return b.racer==int(i);}))continue;
                 auto free=std::find_if(bs.begin(),bs.end(),[](const auto& b){return b.racer<0;});
                 if(free!=bs.end()){free->racer=int(i);continue;}
                 auto far=std::min_element(bs.begin(),bs.end(),[&](const auto& a,const auto& b){return seen[a.racer].z<seen[b.racer].z;});
@@ -581,11 +599,11 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
             }
         }
         // eFade: alpha_0 / fade_in (30 frames) / alpha_255 / fade_out at 60 Hz.
-        for(unsigned elapsed=std::min(tick-impl_->balloonTick,30u);elapsed;--elapsed)for(auto& b:bs){
+        for(unsigned elapsed=std::min(tick-impl_->local().balloonTick,30u);elapsed;--elapsed)for(auto& b:bs){
             if(b.shown!=b.racer){if(b.shown>=0&&b.alpha>0)b.alpha=std::max(0.f,b.alpha-1.f/30);else{b.shown=b.racer;b.alpha=0;}}
             else if(b.shown>=0)b.alpha=std::min(1.f,b.alpha+1.f/30);
         }
-        impl_->balloonTick=tick;
+        impl_->local().balloonTick=tick;
         constexpr float Unit=240.f/456.f; // balloon_1_0 scale 1 on the 456-unit-high race canvas
         static constexpr uint32_t SlotGold[4]={0xe8d400ffu,0xe8d400ffu,0xe8d400ffu,0xe8d400ffu};
         for(const auto& b:bs){
@@ -595,7 +613,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
             const unsigned character=std::min(23u,unsigned(scenario.players[b.shown].character));
             const float lw=BalloonLine[2]*Unit,lh=BalloonLine[3]*Unit;
             renderer.drawScreenSpriteRegion(impl_->balloonLine,ax+BalloonLine[0]*Unit-lw*.5f,ay-BalloonLine[1]*Unit-lh*.5f,lw,lh,0,0,
-                                            BalloonLineUV[0],BalloonLineUV[1],b.alpha,0xffffffffu,b.shown==0?SlotGold:nullptr);
+                                            BalloonLineUV[0],BalloonLineUV[1],b.alpha,0xffffffffu,b.shown==int(me)?SlotGold:nullptr);
             const auto& n=BalloonNames[character];
             const float tw=n.width*BalloonFontScale[0]*Unit,th=n.height*BalloonFontScale[1]*Unit;
             const float right=ax+(BalloonText[0]+BalloonText[2]*.5f)*Unit,cy=ay-BalloonText[1]*Unit;
@@ -616,11 +634,11 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // edge (CtrlRaceBase::InitSelf 0x807E2E3C) in its own control scale.
     if(exitSlide>=1.f)return;
     auto exitLift=[&](float controlScale){
-        const float slide=exitSlide>=0?exitSlide:impl_->base.slide;
+        const float slide=exitSlide>=0?exitSlide:impl_->local().base.slide;
         const float s=slide*slide;
         return 400.f*1.0005f*(s>=.1f?s-.1f:-s)*controlScale*240.f/456.f;
     };
-    const auto& w=impl_->window;
+    const auto& w=impl_->local().window;
     if(w.state!=1){
         constexpr float Unit=2.1f*240.f/456.f; // CtrlRaceItemWindow_1_0 scale, layout unit -> px
         // CtrlRaceBase slide (0x807e2960): t^2 dips 40 units, then flies 360
@@ -681,12 +699,12 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // Shell homing on the player within 6000 units, the rule of the targeted
     // warning sound (race_audio.cpp itemAlarm); the nearest one is shown.
     {
-        auto& c=impl_->chase;
+        auto& c=impl_->local().chase;
         ItemKind incoming=ItemKind::None;
-        if(stage>=2&&!finished)if(const auto* me=Kinoko::Kart::KartObjectManager::Instance()->object(0)){
-            const auto& p=me->pos();float nearest=6000.f;
+        if(stage>=2&&!finished)if(const auto* kart=Kinoko::Kart::KartObjectManager::Instance()->object(me)){
+            const auto& p=kart->pos();float nearest=6000.f;
             for(const auto& a:items.actors()){
-                if(!a.active||a.explosion||a.scattered||a.target!=0)continue;
+                if(!a.active||a.explosion||a.scattered||a.target!=int(me))continue;
                 if(a.kind!=ItemKind::RedShell&&a.kind!=ItemKind::BlueShell)continue;
                 const Vec3 q=a.visualPosition();
                 const float dx=q.x-p.x,dy=q.y-p.y,dz=q.z-p.z,d=std::sqrt(dx*dx+dy*dy+dz*dz);
@@ -701,7 +719,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
         if(incoming!=ItemKind::None)c.kind=incoming;
         const auto& ring=impl_->extras[HudChase];
         if(c.alpha>0&&ring.ready&&c.kind!=ItemKind::None){
-            const float dx=display::WideExtra*.5f,frame=float(c.loop%20);
+            const float dx=wideExtra*.5f,frame=float(c.loop%20);
             // hilight RLPA rotate 0..360; item RLPA scale 1, 1.2, 1 (zero slopes).
             const float angle=frame/20.f*2.f*float(M_PI);
             const float t=frame<10?frame/10.f:(20.f-frame)/10.f,pulse=1.f+.2f*t*t*(3.f-2.f*t);
@@ -720,7 +738,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // CtrlRaceLap_1_0 (y 133, scale 0.8) leaves upward.
     const float lapLift=exitLift(.8f);
     // The lap counter is right-anchored: it keeps its corner on a wider canvas.
-    auto lifted=[&](HudRect r,float dy){r.x+=display::WideExtra;r.y+=dy;return r;};
+    auto lifted=[&](HudRect r,float dy){r.x+=wideExtra;r.y+=dy;return r;};
     if(battle.active)drawBattle(renderer,exitLift(1.f));
     else{
     gold(impl_->extras[HudLap],HudExtras[HudLap],lifted(HudLapLabel,-lapLift));gold(impl_->extras[HudSlash],HudExtras[HudSlash],lifted(HudLapSlash,-lapLift));
@@ -731,16 +749,16 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     // Speedometer (not in the original): the player's speed in the game's own
     // units, which Wii speedometer mods label km/h. Bottom right, the one free
     // corner, in the lap counter's gold digits; leaves downward with the HUD.
-    if(speedometer)if(const auto* kart=Kinoko::Kart::KartObjectManager::Instance()->object(0)){
+    if(speedometer)if(const auto* kart=Kinoko::Kart::KartObjectManager::Instance()->object(me)){
         const unsigned speed=std::min(999u,unsigned(std::lround(std::abs(kart->move()->speed()))));
         char text[4];const int n=std::snprintf(text,sizeof text,"%u",speed);
-        constexpr float Size=22,Advance=15,Right=392+display::WideExtra,Top=194;
+        const float Size=22,Advance=15,Right=392+wideExtra,Top=194;
         const float lift=exitLift(1.f);
         for(int i=0;i<n;++i){const unsigned d=unsigned(text[i]-'0');gold(impl_->digits[d],HudDigits[d],{Right-Size-float(n-1-i)*Advance,Top+lift,Size,Size});}
         renderer.drawScreenText("KM/H",Right-26,Top+Size+3+lift,1.f,0xffffffffu);
     }
     rank=std::clamp(rank,1u,12u);
-    auto& rs=impl_->rankSpin;
+    auto& rs=impl_->local().rankSpin;
     if(!battle.active){
     if(!rs.shown){rs.shown=rank;rs.lastTick=tick;}
     for(unsigned elapsed=std::min(tick-rs.lastTick,30u);elapsed;--elapsed){
@@ -769,7 +787,8 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
     renderer.setScreenDepth(renderer.stereoLayer(stereo::CountdownLayer));
     // CtrlRaceRankNum_1_0 (y -150, scale 1.6) leaves downward. The retail
     // drop shadow (HudRankShadow) is left out: it read as a stray grey copy.
-    const float cx=HudRank.x+HudRank.w*.5f,cy=HudRank.y+HudRank.h*.5f+exitLift(1.6f);
+    // Right-anchored like the lap counter beyond the standard canvas.
+    const float cx=HudRank.x+HudRank.w*.5f+(canvasW-display::Width),cy=HudRank.y+HudRank.h*.5f+exitLift(1.6f);
     if(scale>0.01f){
         const float w=HudRank.w*scale,h=HudRank.h*scale;
         renderer.drawScreenSpriteRegion(impl_->ranks[shown],cx-w*.5f,cy-h*.5f,w,h,0,0,art.u,art.v,1.f,0xffffffffu,nullptr,false,angle);
@@ -787,7 +806,7 @@ void RaceHud::drawOverlay(Renderer& renderer,const RaceItems& items,unsigned sta
         for(const auto& layer:HudCountFrames[std::min(frame,unsigned(HudCountFrames.size()-1))]){
             if(layer.alpha<=0||layer.scale<=0)continue;
             const float width=art.w*layer.scale,height=art.h*layer.scale;
-            renderer.drawScreenFontSprite(impl_->extras[which],display::CenterX+layer.x-width/2,120+layer.y-height/2,
+            renderer.drawScreenFontSprite(impl_->extras[which],centerX+layer.x-width/2,120+layer.y-height/2,
                                           width,height,art.u,art.v,layer.alpha,layer.top,layer.bottom,layer.color0,layer.color1);
         }
         renderer.setScreenDepth(hudDepth);

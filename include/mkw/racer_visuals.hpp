@@ -22,6 +22,10 @@ public:
     // Original vehicle shadow volumes resolve on the world before racers draw.
     void draw(Renderer& renderer,const RaceItems& items,Vec3 viewer,unsigned tick,
               const Model* playerShadow=nullptr,const C3D_Mtx* playerTransform=nullptr);
+    // Splitscreen: prepare() poses every racer for all views (no view culling)
+    // and each later draw() draws those poses in the current view, until the
+    // next prepare().
+    void setAllViews(bool on);
     unsigned count() const;
 private:
     struct Impl;

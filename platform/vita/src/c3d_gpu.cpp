@@ -970,7 +970,15 @@ void C3D_TexEnvBufColor(u32 color) { state.envBufColor = color; }
 
 // ---- Effects ----------------------------------------------------------------------------
 void C3D_DepthMap(bool, float, float) {} // the game keeps citro3d's default map
-void C3D_CullFace(GPU_CULLMODE mode) { state.cull = u8(mode); }
+// Mirrored splitscreen views (c3dport_SetCullSwap): front and back swap.
+static bool cullSwap = false;
+void C3D_CullFace(GPU_CULLMODE mode) {
+	if (cullSwap && mode != GPU_CULL_NONE) mode = mode == GPU_CULL_FRONT_CCW ? GPU_CULL_BACK_CCW : GPU_CULL_FRONT_CCW;
+	state.cull = u8(mode);
+}
+extern "C" void c3dport_SetCullSwap(bool swap) { cullSwap = swap; }
+// The Vita keeps its internal resolution (one local player).
+extern "C" void c3dport_SetResolutionDivisor(float) {}
 void C3D_StencilTest(bool enable, GPU_TESTFUNC function, int ref, int inputMask, int writeMask) {
 	state.stencilEnable = enable; state.stencilFunc = u8(function);
 	state.stencilRef = u8(ref); state.stencilInMask = u8(inputMask); state.stencilWriteMask = u8(writeMask);

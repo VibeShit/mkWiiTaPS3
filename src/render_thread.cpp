@@ -57,10 +57,11 @@ enum : uint16_t {
     CmdBegin=1,CmdEnd,CmdProjection,CmdCourseLighting,CmdRetailFog,CmdRequestBloom,CmdApplyBloom,CmdBottom,
     CmdDraw,CmdDrawAtScreen,CmdMenuIcon,CmdEnvironmentUv,CmdUv1,CmdUvOffset,CmdClearEnvironment,
     CmdRigid,CmdSkin,CmdOverrides,CmdShadows,CmdSparks,CmdEffects,CmdCinema,CmdFade,CmdSprite,CmdFontSprite,
-    CmdMaterialQuads,CmdText,CmdScreenDepth,CmdRequestMirror,
+    CmdMaterialQuads,CmdText,CmdScreenDepth,CmdRequestMirror,CmdView,
 };
 // begun: C3D_FrameBegin already ran on the recording thread (stereo immediate frames).
-struct BeginCommand {static constexpr uint16_t Type=CmdBegin;C3D_Mtx view,projection;bool sync,begun;};
+struct BeginCommand {static constexpr uint16_t Type=CmdBegin;C3D_Mtx view,projection;bool sync,begun;float divisor;};
+struct ViewCommand {static constexpr uint16_t Type=CmdView;C3D_Mtx view,projection;Renderer::ScreenView screen;};
 struct EndCommand {static constexpr uint16_t Type=CmdEnd;};
 struct ProjectionCommand {static constexpr uint16_t Type=CmdProjection;C3D_Mtx projection;};
 struct CourseLightingCommand {static constexpr uint16_t Type=CmdCourseLighting;bool enabled;};
@@ -129,12 +130,14 @@ struct Renderer::FrameList {
     DeferredWrites::Storage storage;
     DeferredWrites writes;
     // This frame's NW4R EF draw list; its vectors keep their capacity across frames.
-    std::unique_ptr<ef::DrawList> effects=std::make_unique<ef::DrawList>();
+    // Splitscreen: one per view, effectLists of them used.
+    std::array<std::unique_ptr<ef::DrawList>,Renderer::kEffectSlots> effects;
+    unsigned effectLists=0;
     unsigned frame=0;
     // Recorded at begin(): both eyes are drawn when active.
     stereo::Frame stereo{};
-    FrameList(){commands.reserve(128*1024);writes.storage_=&storage;}
-    void reset(){commands.clear();data.reset();storage.arena.reset();storage.writes.clear();stereo={};}
+    FrameList(){commands.reserve(128*1024);writes.storage_=&storage;for(auto& e:effects)e=std::make_unique<ef::DrawList>();}
+    void reset(){commands.clear();data.reset();storage.arena.reset();storage.writes.clear();stereo={};effectLists=0;}
 };
 
 DeferredWrites* deferredWrites(){return activeRenderer?activeRenderer->writes():nullptr;}
@@ -274,6 +277,7 @@ void Renderer::execute(FrameList& list){
         case CmdBegin:{
             const auto& c=*static_cast<const BeginCommand*>(body);
             if(eye){beginEyeNow(c.view,c.projection);break;}
+            if(!c.begun)c3dport_SetResolutionDivisor(c.divisor);
             beginNow(c.view,c.projection,c.sync,c.begun);
             // The GPU has finished every earlier frame.
             gpuDone_.store(list.frame,std::memory_order_release);
@@ -328,6 +332,7 @@ void Renderer::execute(FrameList& list){
         }
         case CmdText:{const auto& c=*static_cast<const TextCommand*>(body);drawScreenText(c.text,c.x,c.y,c.size,c.rgba);break;}
         case CmdScreenDepth:screenDepthNow(static_cast<const ScreenDepthCommand*>(body)->parallax);break;
+        case CmdView:{const auto& c=*static_cast<const ViewCommand*>(body);viewNow(c.view,c.projection,c.screen);break;}
         }
     }
     }
@@ -354,7 +359,7 @@ void Renderer::releaseRetired(){
 
 // Recording side of the public calls (renderer.cpp holds the drawing side).
 void Renderer::setFov(float degrees){
-    fov_=std::clamp(degrees,1.f,170.f);Mtx_PerspTilt(&mainProjection_,C3D_AngleFromDegrees(fov_),display::Aspect,10.f,400000.f,false);
+    fov_=std::clamp(degrees,1.f,170.f);Mtx_PerspTilt(&mainProjection_,C3D_AngleFromDegrees(fov_),viewAspect_,10.f,400000.f,false);
     cullProjection_=mainProjection_;
     if(recording())command<ProjectionCommand>().projection=mainProjection_;
     else projection_=mainProjection_;
@@ -417,13 +422,13 @@ void Renderer::beginRecorded(){
         if(!localList_)localList_=std::make_unique<FrameList>();
         localList_->reset();localList_->stereo=frameStereo_;
         recording_=localList_.get();localRecording_=true;
-        auto& c=command<BeginCommand>();c.view=mainView_;c.projection=mainProjection_;c.sync=frameSync;c.begun=true;
+        auto& c=command<BeginCommand>();c.view=mainView_;c.projection=mainProjection_;c.sync=frameSync;c.begun=true;c.divisor=divisor_;
         return;
     }
-    if(!recording()){beginNow(mainView_,mainProjection_,frameSync);retired_.clear();return;}
+    if(!recording()){c3dport_SetResolutionDivisor(divisor_);beginNow(mainView_,mainProjection_,frameSync);retired_.clear();return;}
     renderMetrics={};
     releaseRetired();
-    auto& c=command<BeginCommand>();c.view=mainView_;c.projection=mainProjection_;c.sync=frameSync;c.begun=false;
+    auto& c=command<BeginCommand>();c.view=mainView_;c.projection=mainProjection_;c.sync=frameSync;c.begun=false;c.divisor=divisor_;
     recording_->stereo=frameStereo_;
     writeTarget_.store(recording_,std::memory_order_release);
 }
@@ -447,8 +452,24 @@ void Renderer::beginSourceCamera(const float* view,const float* projection){
     beginStereo(1000.f);
     beginRecorded();
 }
+void Renderer::beginView(const ScreenView& view,Vec3 eye,Vec3 target,Vec3 up){
+    auto e=FVec3_New(eye.x,eye.y,eye.z),t=FVec3_New(target.x,target.y,target.z),u=FVec3_New(up.x,up.y,up.z);
+    Mtx_LookAt(&mainView_,e,t,u,false);
+    beginView(view);
+}
+void Renderer::beginView(const ScreenView& view){
+    viewAspect_=view.h>0?view.w/view.h:display::Aspect;
+    Mtx_PerspTilt(&mainProjection_,C3D_AngleFromDegrees(fov_),viewAspect_,10.f,400000.f,false);
+    // Mirror views flip screen X in the projection itself (row 1 under the
+    // tilt): culling, projectTop and effects then see the flipped scene.
+    if(view.mirror)for(unsigned c=0;c<4;++c)mainProjection_.r[1].c[c]=-mainProjection_.r[1].c[c];
+    cullProjection_=mainProjection_;
+    mainScreenWidth_=view.canvas;mirrorView_=false;
+    if(recording()){auto& c=command<ViewCommand>();c.view=mainView_;c.projection=mainProjection_;c.screen=view;return;}
+    viewNow(mainView_,mainProjection_,view);
+}
 void Renderer::end(){
-    mirrorView_=false;
+    mirrorView_=false;viewAspect_=display::Aspect;
     if(localRecording_){endLocal();return;}
     if(!recording()){
         endNow();gpuIdle_=false;
@@ -604,14 +625,16 @@ void Renderer::drawSparks(const DriftEffects& effects,const Texture* textures){
     c.specs=effects.specs.data();c.specCount=unsigned(effects.specs.size());c.sparks=live;c.count=count;c.textures=textures;
 }
 void Renderer::drawEffects(RaceEffects& effects,const Texture* textures){
-    if(!effects.ready||!effects.liveParticles()||!effectVertices_||!effectProgramReady_)return;
+    if(!effects.ready||!effects.liveParticles()||!effectVertices_[0]||!effectProgramReady_)return;
     if(!recording()){drawEffectsImmediate(effects,textures);return;}
+    if(recording_->effectLists>=kEffectSlots)return;
     updateEffectState(effects);
     // Built now from this step's particles and camera; the list belongs to this
     // frame's command list, which is not reused until the frame has been drawn.
+    auto& list=*recording_->effects[recording_->effectLists++];
     auto& c=command<EffectsCommand>();
-    buildEffectList(effects,mainView_,*recording_->effects);
-    c.effects=&effects;c.list=recording_->effects.get();c.textures=textures;
+    buildEffectList(effects,mainView_,list);
+    c.effects=&effects;c.list=&list;c.textures=textures;
 }
 void Renderer::drawCinemaBars(float topHeight,float bottomHeight,float opacity){
     if(opacity<=0||(topHeight<=0&&bottomHeight<=0))return;

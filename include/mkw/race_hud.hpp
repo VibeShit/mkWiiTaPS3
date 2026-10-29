@@ -35,6 +35,12 @@ public:
     // finishFrame: frames since the player finished (FINISH animation), or -1.
     // exitSlide: the race-end CtrlRaceBase hide slide 0..1, or -1.
     void drawOverlay(Renderer&,const RaceItems&,unsigned stage,unsigned timer,unsigned rank,unsigned lap,bool finished,unsigned tick,int finishFrame=-1,float exitSlide=-1.f);
+    // Splitscreen: the HUD keeps controls for each local player (racers
+    // 0..count-1); drawOverlay draws the selected one's.
+    static constexpr unsigned MaxLocalPlayers=4;
+    void setLocalPlayers(unsigned count);
+    void setPlayer(unsigned player);
+    unsigned player() const;
     bool speedometer=false; // off as on the Wii; SELECT toggles it during a race
     // Battle (Balloon Battle, Coin Runners): the lap counter and position give
     // way to the team score, the player's points or coins and the +1/-1 popup.

@@ -133,6 +133,14 @@ void Renderer::retailBeginFrame(){
     C3D_FVUnifSet(GPU_VERTEX_SHADER,fogParamLoc_,scale*float(FogRampWidth-1)/float(FogRampWidth),
                   (bias*float(FogRampWidth-1)+0.5f)/float(FogRampWidth),scale,bias);
 }
+// A splitscreen view's camera: its light directions. The light textures keep
+// the frame's first camera: earlier views' draws may still sample them.
+void Renderer::retailView(){
+    if(!retail_)return;
+    float rows[3][3];
+    for(unsigned r=0;r<3;++r)for(unsigned c=0;c<3;++c)rows[r][c]=view_.r[r].c[3-c];
+    for(unsigned i=0;i<16;++i)retailLightView_[i]=retailLightViewDirection(retail_->lights[i],rows);
+}
 
 bool Renderer::retailLight(const Submesh& s){
     if(!retail_||!(s.lighting&retail::Retail))return false;
