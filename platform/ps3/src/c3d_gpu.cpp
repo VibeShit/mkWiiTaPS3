@@ -65,6 +65,11 @@ constexpr uint32_t LinearSize = 64u << 20;
 constexpr uint32_t ScratchSize = 16u << 20;
 constexpr uint32_t IoSize = CommandSize + LinearSize + ScratchSize;
 constexpr u8 FenceLabel = 255;
+// Marks how far the RSX has read each command buffer half (switchCommandHalf).
+constexpr u8 HalfLabel = 254;
+// Room kept free at the end of a half: more than any one draw, clear or
+// present writes (its state, textures, programs and 25 constant registers).
+constexpr uint32_t CommandReserveWords = 64u << 10;
 constexpr const char* DataDir = "ux0:data/mkw"; // mapped onto the hard disk (ctru_file.cpp)
 
 // Internal resolution: render targets are this many times their canvas size.
@@ -100,17 +105,25 @@ uint32_t completedFence() { return fenceLabel ? *fenceLabel : 0; }
 bool passed(uint32_t completed, uint32_t fence) { return int32_t(completed - fence) >= 0; }
 // The fence a resource released now must wait for.
 uint32_t releaseFence() { return submittedFence.load() + (inFrame.load() ? 1 : 0); }
-// The command buffer is two halves, one per frame, so GCM's segment callback
-// never runs (PSL1GHT's commands keep context->current in a register across
-// it and write to the old segment). A frame ends with its fence and a jump to
-// the other half, written before PUT passes them; FrameBegin waits for the
-// frame that last used that half.
+// The command buffer is two halves, so GCM's segment callback never runs
+// (PSL1GHT's commands keep context->current in a register across it and write
+// to the old segment). Each frame ends with its fence and a jump to the other
+// half. A frame that fills its half (splitscreen draws every view) jumps to
+// the other half too, before the callback could run (ensureCommandSpace). A
+// half is entered only once the RSX has read it to the label written as it
+// was left, so no command still pending there is overwritten.
 u32* commandBegin = nullptr;
 uint32_t commandHalfWords = 0;
 unsigned commandHalf = 0;
+volatile uint32_t* halfLabel = nullptr;
+uint32_t halfMark = 0, halfLeft[2] = {};
+unsigned commandWraps = 0, frameStartWraps = 0; // mid-frame switches since the last stats line, at FrameBegin
 u32* checkedTo = nullptr; // DEBUG: checkCommands
 const char* lastCheck = "start";
+bool passed(uint32_t completed, uint32_t fence);
 void switchCommandHalf() {
+	halfLeft[commandHalf] = ++halfMark;
+	rsxSetWriteBackendLabel(context, HalfLabel, halfMark);
 	commandHalf ^= 1;
 	u32* begin = commandBegin + commandHalf * commandHalfWords;
 	uint32_t offset = 0;
@@ -119,8 +132,19 @@ void switchCommandHalf() {
 	context->begin = begin;
 	context->current = begin;
 	context->end = begin + commandHalfWords - 1;
+	// PUT moves into the entered half: the RSX runs up to the jump and follows it.
+	rsxFlushBuffer(context);
+	while (!passed(*halfLabel, halfLeft[commandHalf])) usleep(30);
 	checkedTo = begin;
-	lastCheck = "frame start";
+	lastCheck = "half start";
+}
+void checkCommands(const char* where);
+// Before writing a draw, clear or present: a half without room for it is left.
+void ensureCommandSpace() {
+	if (uint32_t(context->end - context->current) >= CommandReserveWords) return;
+	checkCommands("before half switch");
+	switchCommandHalf();
+	++commandWraps;
 }
 void writeFence(bool frameEnd = false) {
 	const uint32_t value = submittedFence.load() + 1;
@@ -697,6 +721,7 @@ void invalidateApplied() {
 // before the target is drawn, sampled or presented.
 void flushClear(Target* t) {
 	if (!t->clearColor && !t->clearDepth) return;
+	ensureCommandSpace();
 	bindSurface(t->colorOffset, t->colorPitch, t->depthOffset, t->depthPitch, t->width, t->height);
 	rsxSetScissor(context, 0, 0, 4095, 4095);
 	u32 mask = 0;
@@ -941,11 +966,15 @@ void skinVertices(const AttributeSource (&src)[16], uint32_t first, uint32_t end
 
 struct FrameStats {
 	unsigned frames = 0, draws = 0, skinned = 0;
+	// The most command words one frame wrote within a half (no mid-frame switch).
+	uint32_t peakWords = 0;
+	u32* frameCommands = nullptr;
 	uint64_t frameUs = 0, lastPresentUs = 0, beginWaitUs = 0, workUs = 0, frameStartUs = 0, drawUs = 0;
 } stats;
 
 // Vertex range [first, end) of a draw, for skinning.
 void prepareDraw(uint32_t first, uint32_t end) {
+	ensureCommandSpace();
 	const bool skinned = state.program == ProgramScene && (C3D_BoolUnifs[0] & 8);
 	FragmentKey key;
 	std::memset(&key, 0, sizeof key);
@@ -1016,6 +1045,7 @@ void afterDraw() {
 
 // The quad that shows a portrait target on the landscape display.
 void present(Target* top) {
+	ensureCommandSpace();
 	flushClear(top); // cleared but never drawn: show the clear
 	bindSurface(displayOffset[backBuffer], displayPitch, displayDepthOffset, displayDepthPitch, int(displayWidth), int(displayHeight));
 	// The display's rows run top to bottom: NDC y = +1 is row 0.
@@ -1119,6 +1149,8 @@ void initDisplay() {
 	scratchBase = static_cast<uint8_t*>(io) + CommandSize + LinearSize;
 	fenceLabel = gcmGetLabelAddress(FenceLabel);
 	*fenceLabel = 0;
+	halfLabel = gcmGetLabelAddress(HalfLabel);
+	*halfLabel = 0;
 
 	// The output the system is set to (720p, 1080i/p, 480p...).
 	videoState video;
@@ -1469,6 +1501,8 @@ bool C3D_FrameBegin(u8) {
 	applied.constantRow = ~0u;
 	checkCommands("frame begin");
 	stats.frameStartUs = nowUs();
+	stats.frameCommands = context->current;
+	frameStartWraps = commandWraps;
 	for (Target* t : targets) t->c3d.used = false;
 	return true;
 }
@@ -1482,6 +1516,8 @@ bool C3D_FrameDrawOn(C3D_RenderTarget* target) {
 }
 void C3D_FrameSplit(u8) { rsxFlushBuffer(context); }
 void C3D_FrameEnd(u8) {
+	if (commandWraps == frameStartWraps && stats.frameCommands && context->current >= stats.frameCommands)
+		stats.peakWords = std::max(stats.peakWords, uint32_t(context->current - stats.frameCommands));
 	if (topOutput && topOutput->c3d.used) {
 		if (stats.frameStartUs) stats.workUs += nowUs() - stats.frameStartUs;
 		present(topOutput);
@@ -1499,9 +1535,11 @@ void C3D_FrameEnd(u8) {
 		c3dps3::programUs = 0;
 		stats.lastPresentUs = now;
 		if (++stats.frames == 300) {
-			std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms\n",
+			std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms, commands peak %u KiB of %u, %u half switches\n",
 				stats.frameUs ? 299e6 / double(stats.frameUs) : 0.0, stats.draws / 300, stats.skinned / 300,
-				double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3);
+				double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3,
+				unsigned(stats.peakWords / 256), unsigned(commandHalfWords / 256), commandWraps);
+			commandWraps = 0;
 			const uint64_t keep = stats.lastPresentUs;
 			stats = {};
 			stats.lastPresentUs = keep;
