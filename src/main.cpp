@@ -561,7 +561,10 @@ int main() {
             }
             if(back){
                 if(!count)return false;
-                if(back&(1u<<chosen[count-1]))--count;
+                // The chooser's controller undoes its choice; once it is
+                // disconnected, any controller can.
+                const u32 owner=1u<<chosen[count-1];
+                if((back&owner)||!(hidDevicesConnected()&owner))--count;
             }
             if(count==n){hidAssignPlayers(chosen.data(),n);return true;}
             menuRenderer.request(backdrop,mkw::AssetPriority::Urgent);menuRenderer.update(renderer);

@@ -44,7 +44,7 @@ The log goes to `/dev_hdd0/game/MKWP00001/USRDIR/mkw/ps3.log`.
 `mkw/quality.txt`, line `resolution = N`: the internal resolution as a
 multiple of 400x240. N ranges from 1 to 4 and defaults to 2; 3 is about 720p.
 
-Splitscreen (see below) adds two lines:
+Splitscreen and PlayStation Move (see below) add these lines:
 
 | Setting | Default | |
 |---|---|---|
@@ -59,8 +59,9 @@ Connect a DualShock 3 or a PlayStation Move per player, then choose
 **Multiplayer** on the main menu and pick **2P**, **3P** or **4P**.
 
 1. Each player in turn presses X on their DualShock 3 or the Move button on
-   their Move: that controller is theirs. Circle undoes the last choice (with
-   none made, it goes back to the main menu).
+   their Move: that controller is theirs. Circle on that controller undoes the
+   last choice (any controller can, once it is disconnected); with none made,
+   Circle goes back to the main menu.
 2. Player 1 chooses the engine class (50cc, 100cc, 150cc or Mirror).
 3. Every player picks a character, vehicle and drift type at the same time,
    each on their own grid with their own controller. Circle backs out of a

@@ -117,11 +117,14 @@ uint32_t commandHalfWords = 0;
 unsigned commandHalf = 0;
 volatile uint32_t* halfLabel = nullptr;
 uint32_t halfMark = 0, halfLeft[2] = {};
-unsigned commandWraps = 0, frameStartWraps = 0; // mid-frame switches since the last stats line, at FrameBegin
+unsigned commandWraps = 0; // mid-frame switches since the last stats line
 u32* checkedTo = nullptr; // DEBUG: checkCommands
 const char* lastCheck = "start";
 bool passed(uint32_t completed, uint32_t fence);
+uint32_t peakHalfWords = 0; // the fullest a half got since the last stats line
 void switchCommandHalf() {
+	// A half holds one frame, or the part of one that fit (present included).
+	peakHalfWords = std::max(peakHalfWords, uint32_t(context->current - context->begin));
 	halfLeft[commandHalf] = ++halfMark;
 	rsxSetWriteBackendLabel(context, HalfLabel, halfMark);
 	commandHalf ^= 1;
@@ -966,9 +969,6 @@ void skinVertices(const AttributeSource (&src)[16], uint32_t first, uint32_t end
 
 struct FrameStats {
 	unsigned frames = 0, draws = 0, skinned = 0;
-	// The most command words one frame wrote within a half (no mid-frame switch).
-	uint32_t peakWords = 0;
-	u32* frameCommands = nullptr;
 	uint64_t frameUs = 0, lastPresentUs = 0, beginWaitUs = 0, workUs = 0, frameStartUs = 0, drawUs = 0;
 } stats;
 
@@ -1501,8 +1501,6 @@ bool C3D_FrameBegin(u8) {
 	applied.constantRow = ~0u;
 	checkCommands("frame begin");
 	stats.frameStartUs = nowUs();
-	stats.frameCommands = context->current;
-	frameStartWraps = commandWraps;
 	for (Target* t : targets) t->c3d.used = false;
 	return true;
 }
@@ -1516,8 +1514,6 @@ bool C3D_FrameDrawOn(C3D_RenderTarget* target) {
 }
 void C3D_FrameSplit(u8) { rsxFlushBuffer(context); }
 void C3D_FrameEnd(u8) {
-	if (commandWraps == frameStartWraps && stats.frameCommands && context->current >= stats.frameCommands)
-		stats.peakWords = std::max(stats.peakWords, uint32_t(context->current - stats.frameCommands));
 	if (topOutput && topOutput->c3d.used) {
 		if (stats.frameStartUs) stats.workUs += nowUs() - stats.frameStartUs;
 		present(topOutput);
@@ -1538,8 +1534,8 @@ void C3D_FrameEnd(u8) {
 			std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms, commands peak %u KiB of %u, %u half switches\n",
 				stats.frameUs ? 299e6 / double(stats.frameUs) : 0.0, stats.draws / 300, stats.skinned / 300,
 				double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3,
-				unsigned(stats.peakWords / 256), unsigned(commandHalfWords / 256), commandWraps);
-			commandWraps = 0;
+				unsigned(peakHalfWords / 256), unsigned(commandHalfWords / 256), commandWraps);
+			commandWraps = 0;peakHalfWords = 0;
 			const uint64_t keep = stats.lastPresentUs;
 			stats = {};
 			stats.lastPresentUs = keep;
