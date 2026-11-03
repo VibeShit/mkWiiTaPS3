@@ -21,6 +21,7 @@
 #include "mkw/fpu_mode.hpp"
 #include "mkw/menu_ui.hpp"
 #include "mkw/race_effects.hpp"
+#include "mkw/trace.hpp"
 #include "mkw/nw4r_ef_draw.hpp"
 #include "mkw/retail_lighting.hpp"
 #include "mkw/skin_positions.hpp"
@@ -183,6 +184,7 @@ void Renderer::threadLoop(){
             LightEvent_Wait(&wake_);
         }
         execute(*lists_[next%2]);
+        mkw::trace::at(mkw::trace::Render,"idle");
         completed_.store(next+1,std::memory_order_release);
         LightEvent_Signal(&done_);
     }
@@ -272,6 +274,13 @@ void Renderer::execute(FrameList& list){
     const uint8_t* p=list.commands.data();const uint8_t* end=p+list.commands.size();
     while(p<end){
         const auto& h=*reinterpret_cast<const Header*>(p);const void* body=&h+1;p+=h.size;
+        {
+            // The command being drawn, for the watchdog (main.cpp).
+            static const char* const names[]={"?","Begin","End","Projection","CourseLighting","RetailFog","RequestBloom","ApplyBloom","Bottom",
+                "Draw","DrawAtScreen","MenuIcon","EnvironmentUv","Uv1","UvOffset","ClearEnvironment","Rigid","Skin","Overrides","Shadows",
+                "Sparks","Effects","Cinema","Fade","Sprite","FontSprite","MaterialQuads","Text","ScreenDepth","RequestMirror","View"};
+            mkw::trace::at(mkw::trace::Render,h.type<std::size(names)?names[h.type]:"?");
+        }
         if(bottom&&eye+1<eyes&&h.type!=CmdEnd)continue;
         switch(h.type){
         case CmdBegin:{

@@ -58,6 +58,7 @@
 #include <mkw/menu_profile.hpp>
 #include <mkw/asset_loader.hpp>
 #include <mkw/asset_pack.hpp>
+#include <mkw/trace.hpp>
 #include <game/kart/Status.hh>
 #include <abstract/File.hh>
 #include <egg/core/ExpHeap.hh>
@@ -448,6 +449,25 @@ int main() {
     // Race frames draw on the second core one frame behind their recording
     // (src/render_thread.cpp); menus draw immediately.
     if(!renderer.startRenderThread())report("render thread unavailable: race frames draw on core 0");
+#ifdef __PPU__
+    // A hang leaves no other trace on the PS3: when the menus or the race stop
+    // advancing for 4 s, say where each thread last was (runtime.log).
+    threadCreate([](void*){
+        unsigned last=mkw::trace::progress.load(),still=0;
+        for(;;){
+            svcSleepThread(1000000000LL);
+            const unsigned now=mkw::trace::progress.load();
+            if(now!=last){last=now;still=0;continue;}
+            if(++still%15!=4)continue;
+            auto name=[](mkw::trace::Thread t){const char* w=mkw::trace::where[t].load();return w?w:"-";};
+            if(FILE* f=fopen("ux0:data/mkw/runtime.log","a")){
+                fprintf(f,"watchdog: no progress for %u s at iteration %u: main '%s', render '%s', job worker '%s'\n",
+                        still,now,name(mkw::trace::Main),name(mkw::trace::Render),name(mkw::trace::Job));
+                fclose(f);
+            }
+        }
+    },nullptr,32*1024,0x3f,-1,true);
+#endif
     mkw::MenuState menu;
     mkw::MenuRenderer menuRenderer;
     // Original animation banks keep palette workspaces; they must not occupy
@@ -552,6 +572,7 @@ int main() {
         };
         unsigned frame=0;
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             hidScanInput();++frame;
             const u32 confirm=hidDevicesDown(KEY_A),back=hidDevicesDown(KEY_B);
             for(int d=0;d<32&&count<n;++d){
@@ -614,6 +635,7 @@ int main() {
         };
         auto last=svcGetSystemTick();double pending=0;
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             hidScanInput();
             bool leave=false;
             for(unsigned p=0;p<n&&!leave;++p){
@@ -712,6 +734,7 @@ int main() {
             renderer.waitForGpu();return action;
         };
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             // The logical page becomes Race while the pause exit still animates.
             // Keep the resident course for ResumeRace; only release when leaving
             // the race section for an unrelated menu or a different race.
@@ -1590,6 +1613,7 @@ int main() {
         auto drawBoard=[](void* context){auto& b=*static_cast<Board*>(context);b.ui->drawResults(*b.renderer,*b.flow);};
         auto last=svcGetSystemTick();double pending=0;
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             hidScanInput();
             // A, B or START: on to the standings, then out.
             if((hidKeysDown()&(KEY_A|KEY_B|KEY_START))&&ceremony->skippable())ceremony->advance();
@@ -1608,6 +1632,8 @@ int main() {
     };
     renderer.setDeferred(deferredRace);
     while(aptMainLoop()){
+        mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
+        mkw::trace::at(mkw::trace::Main,"race: frame start");
         // Poll controls and advance source state once per top-screen refresh.
         // Submit once per presentation slot. FrameBegin below retires
         // the prior GPU queue without inserting a second VBlank wait.
@@ -1870,6 +1896,7 @@ int main() {
                     }
                     // Resolve item activation/expiry before choosing this tick's
                     // controller, including CPU Bullet Bills and the handoff back.
+                    mkw::trace::at(mkw::trace::Main,"race: grid before step");
                     raceGrid.beforeStep(raceItems->bulletPlayers());
                 }
                 if(autoplay&&cpuLogEvery&&fullRace&&physicsSteps%cpuLogEvery==0){
@@ -1888,7 +1915,9 @@ int main() {
                 }
                 // QA: a fall boundary (variant 0) activation, so the retail SetCamera hold applies.
                 if(autoplay&&lakituRespawnStep&&physicsSteps==lakituRespawnStep){auto* qaCollide=K::Kart::KartObjectManager::Instance()->object(0)->collide();qaCollide->setOobCameraPending(uint16_t(lakituRequest));qaCollide->activateOob(false,nullptr,false,false);}
+                mkw::trace::at(mkw::trace::Main,"race: Kinoko step");
                 scenes.calc();
+                mkw::trace::at(mkw::trace::Main,"race: after Kinoko step");
                 {
                     // The player's driver model after the kart step: its trick animation,
                     // sparkle and sound start together (trick_presentation.hpp).
@@ -2052,6 +2081,7 @@ int main() {
                             for(unsigned i=0;i<std::min<unsigned>(raceGrid.count(),kartContacts.size());++i)
                                 K::Kart::KartObjectManager::Instance()->object(i)->move()->takeSoundCues();
                         }
+                        mkw::trace::at(mkw::trace::Main,"race: sound step");
                         raceSound.step(audio,&actors);
                         // QA: race audio counters every 600 ticks (in memory; written with the profile).
                         if(menuProfile->enabled()&&raceSound.active()&&physicsSteps%600==0){
@@ -2352,6 +2382,7 @@ int main() {
                         }
                         raceEffects.setGroups(calcGroups,drawGroups);
                     }
+                    mkw::trace::at(mkw::trace::Main,"race: effects step");
                     raceEffects.step();
                     {mkw::Vec3 eye,target;presentationCamera(eye,target);raceEffects.setCamera(eye,target,{0,1,0});
                      // The clip manager (0x80783344) after the camera: each racer's sphere on
@@ -2424,6 +2455,7 @@ int main() {
                  const mkw::Vec3 chase=chaseCamera.eye(),look=chaseCamera.pivot()+mkw::Vec3{0,params.targetPosY-cameraKart->cameraDistY(),0};
                  renderer.setStereoSubject(mkw::stereo::Race,dot(vec(cameraKart->pos())-chase,mkw::normalized(look-chase)));
              }else if(renderer.stereoCapable())renderer.setStereoSubject(mkw::stereo::Race,dot(vec(cameraKart->pos())-eye,mkw::normalized(target-eye)));
+             mkw::trace::at(mkw::trace::Main,"race: renderer begin");
              renderer.begin(eye,target,{0,1,0});}
             // The views: 2P top and bottom halves (a 16:4.5 canvas twice the
             // width), 3-4P quadrants (the full-screen canvas at half size).
@@ -2502,8 +2534,10 @@ int main() {
             courseObjects.drawSky(renderer,physicsSteps,renderer.cameraPosition());
             for(auto& model:track)renderer.draw(*model,transform);
             profiler->mark(Profile::Course);
+            mkw::trace::at(mkw::trace::Main,"draw: course objects");
             courseObjects.draw(renderer,physicsSteps,renderer.cameraPosition());profiler->mark(Profile::Scenery);
             renderer.setCourseLighting(false);
+            mkw::trace::at(mkw::trace::Main,"draw: opponents");
             if(fullRace)opponents.draw(renderer,*raceItems,viewer,physicsSteps,
                 playerCastsShadow?vehicleShadow.get():nullptr,&playerShadowTransform);
             else if(playerCastsShadow){mkw::Renderer::ShadowVolume shadow{vehicleShadow.get(),playerShadowTransform};renderer.drawShadowVolumes(&shadow,1,.5f);}
@@ -2539,6 +2573,7 @@ int main() {
             // Lakitu attends player 1 only.
             if(fullRace&&viewPlayer==0)lakitu.draw(renderer);
             profiler->mark(Profile::Items);
+            mkw::trace::at(mkw::trace::Main,"draw: player pose");
             if(playerJobQueued)mkw::jobWorker().finish(playerJob);else if(!playerPosed)posePlayer();
             playerJobQueued=false;playerPosed=true;
             auto drawSkinned=[&](const mkw::DriverAnimation* bank,const mkw::Model& model,const C3D_Mtx& matrix){
@@ -2572,6 +2607,7 @@ int main() {
             courseObjects.drawWater(renderer);
             renderer.setCourseLighting(false);
             renderer.drawSparks(driftEffects,sparkTexture);
+            mkw::trace::at(mkw::trace::Main,"draw: effects");
             renderer.drawEffects(raceEffects,effectTextures->data());
             mkw::jobWorker().finishAll();
             renderer.applyBloom();
@@ -2593,6 +2629,7 @@ int main() {
                     bottomView.milliseconds=uint32_t(left)*1000u/60u;
                     for(unsigned i=0;i<std::min(bottomView.racers,12u);++i)bottomView.racer[i].team=uint8_t(mkw::BalloonBattle::team(i));
                 }
+                mkw::trace::at(mkw::trace::Main,"hud: map");
                 bottomScreen.drawMini(renderer,bottomView);
             }
             if(fullRace&&!intro.active()){auto* race=K::System::RaceManager::Instance();
@@ -2602,6 +2639,7 @@ int main() {
                                 mkw::BalloonBattle::team(0),balloonBattle.popup(),balloonBattle.popupAge()};
                 // Splitscreen: each player's FINISH runs from its own goal.
                 const int finishFrame=!splitscreen()?results.finishFrame():localFinishStep[viewPlayer]==~0u?-1:int(physicsSteps-localFinishStep[viewPlayer]);
+                mkw::trace::at(mkw::trace::Main,"hud: overlay");
                 raceHud.setPlayer(viewPlayer);
                 raceHud.drawOverlay(renderer,*raceItems,unsigned(race->stage()),race->timer(),battleMode?balloonBattle.rank(0):raceGrid.rank(viewPlayer),raceGrid.lap(viewPlayer),battleMode?battleOver:raceGrid.finished(viewPlayer),physicsSteps,finishFrame,results.hudSlide());
                 if(timeTrial&&courseChoice<bestTimes.size()&&!results.hudGone()){
@@ -2654,7 +2692,8 @@ int main() {
             }
         }else renderer.begin({0,100,500},{0,0,0},{0,1,0});
         if(frames==0)report("graphics first frame submitting");
-        renderer.end();profiler->mark(Profile::Submit);profiler->end(physicsSteps,renderer);frames++;
+        mkw::trace::at(mkw::trace::Main,"race: renderer end");
+        renderer.end();profiler->mark(Profile::Submit);mkw::trace::at(mkw::trace::Main,"race: frame submitted");profiler->end(physicsSteps,renderer);frames++;
         if(raceLoadStart){
             const double ms=double(svcGetSystemTick()-raceLoadStart)*1000.0/SYSCLOCK_ARM11;raceLoadStart=0;lastRaceFrame=0;
             LOGF("race_load_ms=%.1f course=%s driver=%u vehicle=%u failed=%d",ms,Courses[courseChoice].name,driverChoice,vehicleChoice,int(trackLoadFailed));menuProfile->event(line);

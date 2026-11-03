@@ -121,6 +121,7 @@ unsigned commandWraps = 0; // mid-frame switches since the last stats line
 u32* checkedTo = nullptr; // DEBUG: checkCommands
 const char* lastCheck = "start";
 bool passed(uint32_t completed, uint32_t fence);
+void reportStall(const char* what, uint32_t want, uint32_t have);
 uint32_t peakHalfWords = 0; // the fullest a half got since the last stats line
 void switchCommandHalf() {
 	// A half holds one frame, or the part of one that fit (present included).
@@ -137,7 +138,12 @@ void switchCommandHalf() {
 	context->end = begin + commandHalfWords - 1;
 	// PUT moves into the entered half: the RSX runs up to the jump and follows it.
 	rsxFlushBuffer(context);
-	while (!passed(*halfLabel, halfLeft[commandHalf])) usleep(30);
+	const uint64_t start = nowUs();
+	bool reported = false;
+	while (!passed(*halfLabel, halfLeft[commandHalf])) {
+		usleep(30);
+		if (!reported && nowUs() - start > 2000000) { reported = true; reportStall("half label", halfLeft[commandHalf], *halfLabel); }
+	}
 	checkedTo = begin;
 	lastCheck = "half start";
 }
@@ -156,8 +162,24 @@ void writeFence(bool frameEnd = false) {
 	rsxFlushBuffer(context);
 	submittedFence.store(value);
 }
+// A wait over 2 s means the RSX stopped: say where it is reading (ps3.log).
+void reportStall(const char* what, uint32_t want, uint32_t have) {
+	const gcmControlRegister* control = gcmGetControlRegister();
+	const uint32_t half = commandHalfWords * 4;
+	uint32_t base = 0;
+	rsxAddressToOffset(commandBegin, &base);
+	std::printf("c3dps3: RSX stalled waiting for %s %u (at %u): get +0x%x put +0x%x (halves of 0x%x, writing half %u at +0x%x), last commands '%s'\n",
+		what, unsigned(want), unsigned(have), unsigned(control->get - base), unsigned(control->put - base), unsigned(half), commandHalf,
+		unsigned((context->current - commandBegin) * 4), lastCheck);
+	std::fflush(stdout);
+}
 void waitFence(uint32_t value) {
-	while (!passed(completedFence(), value)) usleep(30);
+	const uint64_t start = nowUs();
+	bool reported = false;
+	while (!passed(completedFence(), value)) {
+		usleep(30);
+		if (!reported && nowUs() - start > 2000000) { reported = true; reportStall("fence", value, completedFence()); }
+	}
 }
 // Everything submitted so far has completed (render thread).
 void waitIdle() { writeFence(); waitFence(submittedFence.load()); }
