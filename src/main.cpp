@@ -587,6 +587,8 @@ int main() {
                 const u32 owner=1u<<chosen[count-1];
                 if((back&owner)||!(hidDevicesConnected()&owner))--count;
             }
+            // A chosen controller that has been disconnected is chosen no more.
+            {unsigned kept=0;const u32 live=hidDevicesConnected();for(unsigned i=0;i<count;++i)if(live&(1u<<chosen[i]))chosen[kept++]=chosen[i];count=kept;}
             if(count==n){hidAssignPlayers(chosen.data(),n);return true;}
             menuRenderer.request(backdrop,mkw::AssetPriority::Urgent);menuRenderer.update(renderer);
             renderer.begin({0,0,1000},{0,0,0},{0,1,0});
@@ -704,6 +706,7 @@ int main() {
             bool ready=menuRenderer.prepare(paused);
             if(!ready){menuRenderer.release(renderer);renderer.waitForGpu();ready=menuRenderer.prepare(paused);}
             while(!ready&&aptMainLoop()){
+                mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
                 hidScanInput();const unsigned down=hidKeysDown();
                 if(down&(KEY_B|KEY_START)){menu.enter(mkw::UiPage::Race);return mkw::UiAction::ResumeRace;}
                 if(down&KEY_A){menuRenderer.release(renderer);renderer.waitForGpu();ready=menuRenderer.prepare(paused);}

@@ -1536,6 +1536,7 @@ bool C3D_FrameDrawOn(C3D_RenderTarget* target) {
 }
 void C3D_FrameSplit(u8) { rsxFlushBuffer(context); }
 void C3D_FrameEnd(u8) {
+	bool report = false;
 	if (topOutput && topOutput->c3d.used) {
 		if (stats.frameStartUs) stats.workUs += nowUs() - stats.frameStartUs;
 		present(topOutput);
@@ -1552,21 +1553,23 @@ void C3D_FrameEnd(u8) {
 		c3dps3::programsCreated = 0;
 		c3dps3::programUs = 0;
 		stats.lastPresentUs = now;
-		if (++stats.frames == 300) {
-			std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms, commands peak %u KiB of %u, %u half switches\n",
-				stats.frameUs ? 299e6 / double(stats.frameUs) : 0.0, stats.draws / 300, stats.skinned / 300,
-				double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3,
-				unsigned(peakHalfWords / 256), unsigned(commandHalfWords / 256), commandWraps);
-			commandWraps = 0;peakHalfWords = 0;
-			const uint64_t keep = stats.lastPresentUs;
-			stats = {};
-			stats.lastPresentUs = keep;
-		}
+		report = ++stats.frames == 300;
 	}
 	checkCommands("frame end");
 	writeFence(true);
 	inFrame.store(false);
 	++frameNumber;
+	// After writeFence: its switch has measured this frame's half too.
+	if (report) {
+		std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms, commands peak %u KiB of %u, %u half switches\n",
+			stats.frameUs ? 299e6 / double(stats.frameUs) : 0.0, stats.draws / 300, stats.skinned / 300,
+			double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3,
+			unsigned(peakHalfWords / 256), unsigned(commandHalfWords / 256), commandWraps);
+		commandWraps = 0; peakHalfWords = 0;
+		const uint64_t keep = stats.lastPresentUs;
+		stats = {};
+		stats.lastPresentUs = keep;
+	}
 }
 void C3D_FrameEndHook(void (*)(void*), void*) {}
 float C3D_GetDrawingTime(void) { return 0.f; }
