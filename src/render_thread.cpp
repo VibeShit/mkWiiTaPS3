@@ -235,9 +235,14 @@ void Renderer::submit(){
 }
 void Renderer::drain(){
     // Each eye replays a whole stereo frame, so one being recorded is not
-    // split here: callers mid-frame (effect material rebuilds) only need the
-    // frames already submitted to finish.
+    // split here.
     if(!(writeTarget_.load(std::memory_order_relaxed)&&recording_&&recording_->stereo.active()))submit();
+    drainSubmitted();
+}
+void Renderer::drainSubmitted(){
+    // A frame being recorded is never split: submitting half of it leaves the
+    // rest without its FrameBegin and runs its deferred writes on this thread
+    // while the GPU frame is open (the PS3 froze on the first particles).
     if(!thread_)return;
     const unsigned target=submitted_.load(std::memory_order_relaxed);
     while(completed_.load(std::memory_order_acquire)!=target){
@@ -409,7 +414,7 @@ void Renderer::requestBloom(const CourseBloom& settings){
     if(!recording()){requestBloomNow(settings);return;}
     // Bloom's VRAM targets (unless reserved at load) and LINEAR vertices:
     // create them here, once, with the render thread idle.
-    if(settings.enabled()&&!bloomVertices_&&!bloomFailed_){drain();initBloom();}
+    if(settings.enabled()&&!bloomVertices_&&!bloomFailed_){drainSubmitted();initBloom();}
     command<RequestBloomCommand>().settings=&settings;
 }
 void Renderer::begin(Vec3 eye,Vec3 target,Vec3 up){
@@ -520,7 +525,7 @@ void Renderer::requestMirror(){
     mirrorView_=true;
     // The scene target and composite quads are bloom's (made once): create
     // them with the render thread idle, as requestBloom does.
-    if(!bloomVertices_&&!bloomFailed_){if(recording())drain();initBloom();}
+    if(!bloomVertices_&&!bloomFailed_){if(recording())drainSubmitted();initBloom();}
     if(!recording()){mirrorRequested_=true;return;}
     command<RequestMirrorCommand>();
 }
