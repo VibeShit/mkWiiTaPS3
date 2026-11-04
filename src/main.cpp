@@ -684,7 +684,12 @@ int main() {
                 char label[16];snprintf(label,sizeof label,ready[p]?"P%u READY":"P%u",p+1);
                 renderer.drawScreenText(label,14,14,3.f,ready[p]?0x60ff60ffu:0xffffffffu);
                 // A player without a controller cannot choose: say so (player 1 can still back out).
-                if(p>=hidPadCount())renderer.drawScreenText("CONNECT A CONTROLLER",14,200,2.f,0xff6060ffu);
+                bool connected=p<hidPadCount();
+#ifdef __PPU__
+                // An assigned controller that has been disconnected (it resumes on reconnecting).
+                if(connected){const int d=hidPadDevice(p);connected=d>=0&&(hidDevicesConnected()&(1u<<d));}
+#endif
+                if(!connected)renderer.drawScreenText("CONNECT A CONTROLLER",14,200,2.f,0xff6060ffu);
             }
             renderer.beginView(mkw::Renderer::ScreenView{});
             renderer.end();
