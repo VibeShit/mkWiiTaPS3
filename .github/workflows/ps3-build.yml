@@ -1,0 +1,86 @@
+name: Build and Release PS3 Project
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  PS3DEV: /usr/local/ps3dev
+  PSL1GHT: /usr/local/ps3dev
+
+jobs:
+  build-ps3:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 1
+
+      - name: Get Commit Message
+        id: get-commit
+        run: |
+          MSG=$(git log -1 --pretty=%s)
+          echo "message=$MSG" >> $GITHUB_OUTPUT
+
+      - name: Get Latest PS3DEV Release Tag
+        id: get-version
+        run: |
+          TAG=$(curl -s https://api.github.com/repos/ps3dev/ps3dev/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Prepare PS3DEV Directory
+        run: |
+          sudo mkdir -p ${{ env.PS3DEV }}
+          sudo chown -R $USER: ${{ env.PS3DEV }}
+
+      - name: Cache PS3DEV SDK
+        id: cache-ps3dev
+        uses: actions/cache@v6
+        with:
+          path: ${{ env.PS3DEV }}
+          key: ps3dev-${{ runner.os }}-${{ steps.get-version.outputs.tag }}
+
+      - name: Install Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y autoconf automake bison flex gcc libelf-dev make \
+            texinfo libncurses5-dev patch subversion wget zlib1g-dev \
+            libtool libtool-bin bzip2 libgmp3-dev pkg-config g++ \
+            libssl-dev clang ninja-build cmake python-is-python3 python-dev-is-python3
+
+      - name: Download and Extract (Cache Miss)
+        if: steps.cache-ps3dev.outputs.cache-hit != 'true'
+        run: |
+          ASSET_URL=$(curl -s https://api.github.com/repos/ps3dev/ps3dev/releases/tags/${{ steps.get-version.outputs.tag }} | grep "browser_download_url" | grep -iE "ubuntu|linux" | head -n 1 | cut -d '"' -f 4)
+          wget -qO ps3dev.tar.gz "$ASSET_URL"
+          tar -xzf ps3dev.tar.gz -C ${{ env.PS3DEV }} --strip-components=1
+
+      - name: Set Environment Variables
+        run: |
+          echo "PS3DEV=${{ env.PS3DEV }}" >> $GITHUB_ENV
+          echo "PSL1GHT=${{ env.PSL1GHT }}" >> $GITHUB_ENV
+          echo "${{ env.PS3DEV }}/bin" >> $GITHUB_PATH
+          echo "${{ env.PS3DEV }}/ppu/bin" >> $GITHUB_PATH
+          echo "${{ env.PS3DEV }}/spu/bin" >> $GITHUB_PATH
+
+      - name: Bootstrap Dependencies
+        run: python tools/bootstrap.py
+
+      - name: Configure CMake
+        run: cmake -G Ninja -B build/ps3 -DMKW_PLATFORM=ps3
+
+      - name: Build Project
+        run: cmake --build build/ps3
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.run_id }}
+          name: ${{ steps.get-commit.outputs.message }}
+          files: |
+            build/ps3/mkw.pkg
+            build/ps3/mkw.self
