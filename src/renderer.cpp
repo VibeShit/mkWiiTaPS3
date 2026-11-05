@@ -1177,8 +1177,9 @@ void Renderer::updateEffectState(RaceEffects& effects){
     EffectDrawState& state=*effectDraw_;
     auto& system=effects.system();
     if(state.owner==&effects&&state.resources==system.resources.size()&&state.sizes.size()==effects.textures.size())return;
-    // A recorded frame still being drawn reads these materials.
-    if(recording())drain();
+    // A frame already submitted may still read these materials; the one being
+    // recorded has not run yet.
+    if(recording())drainSubmitted();
     state.owner=&effects;state.resources=system.resources.size();
     state.materials.assign(system.resources.size(),{});
     for(size_t i=0;i<system.resources.size();++i)ef::translateMaterial(system.resources[i].desc.draw,state.materials[i]);

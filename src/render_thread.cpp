@@ -21,6 +21,7 @@
 #include "mkw/fpu_mode.hpp"
 #include "mkw/menu_ui.hpp"
 #include "mkw/race_effects.hpp"
+#include "mkw/trace.hpp"
 #include "mkw/nw4r_ef_draw.hpp"
 #include "mkw/retail_lighting.hpp"
 #include "mkw/skin_positions.hpp"
@@ -183,6 +184,7 @@ void Renderer::threadLoop(){
             LightEvent_Wait(&wake_);
         }
         execute(*lists_[next%2]);
+        mkw::trace::at(mkw::trace::Render,"idle");
         completed_.store(next+1,std::memory_order_release);
         LightEvent_Signal(&done_);
     }
@@ -233,9 +235,14 @@ void Renderer::submit(){
 }
 void Renderer::drain(){
     // Each eye replays a whole stereo frame, so one being recorded is not
-    // split here: callers mid-frame (effect material rebuilds) only need the
-    // frames already submitted to finish.
+    // split here.
     if(!(writeTarget_.load(std::memory_order_relaxed)&&recording_&&recording_->stereo.active()))submit();
+    drainSubmitted();
+}
+void Renderer::drainSubmitted(){
+    // A frame being recorded is never split: submitting half of it leaves the
+    // rest without its FrameBegin and runs its deferred writes on this thread
+    // while the GPU frame is open (the PS3 froze on the first particles).
     if(!thread_)return;
     const unsigned target=submitted_.load(std::memory_order_relaxed);
     while(completed_.load(std::memory_order_acquire)!=target){
@@ -272,6 +279,13 @@ void Renderer::execute(FrameList& list){
     const uint8_t* p=list.commands.data();const uint8_t* end=p+list.commands.size();
     while(p<end){
         const auto& h=*reinterpret_cast<const Header*>(p);const void* body=&h+1;p+=h.size;
+        {
+            // The command being drawn, for the watchdog (main.cpp).
+            static const char* const names[]={"?","Begin","End","Projection","CourseLighting","RetailFog","RequestBloom","ApplyBloom","Bottom",
+                "Draw","DrawAtScreen","MenuIcon","EnvironmentUv","Uv1","UvOffset","ClearEnvironment","Rigid","Skin","Overrides","Shadows",
+                "Sparks","Effects","Cinema","Fade","Sprite","FontSprite","MaterialQuads","Text","ScreenDepth","RequestMirror","View"};
+            mkw::trace::at(mkw::trace::Render,h.type<std::size(names)?names[h.type]:"?");
+        }
         if(bottom&&eye+1<eyes&&h.type!=CmdEnd)continue;
         switch(h.type){
         case CmdBegin:{
@@ -400,7 +414,7 @@ void Renderer::requestBloom(const CourseBloom& settings){
     if(!recording()){requestBloomNow(settings);return;}
     // Bloom's VRAM targets (unless reserved at load) and LINEAR vertices:
     // create them here, once, with the render thread idle.
-    if(settings.enabled()&&!bloomVertices_&&!bloomFailed_){drain();initBloom();}
+    if(settings.enabled()&&!bloomVertices_&&!bloomFailed_){drainSubmitted();initBloom();}
     command<RequestBloomCommand>().settings=&settings;
 }
 void Renderer::begin(Vec3 eye,Vec3 target,Vec3 up){
@@ -511,7 +525,7 @@ void Renderer::requestMirror(){
     mirrorView_=true;
     // The scene target and composite quads are bloom's (made once): create
     // them with the render thread idle, as requestBloom does.
-    if(!bloomVertices_&&!bloomFailed_){if(recording())drain();initBloom();}
+    if(!bloomVertices_&&!bloomFailed_){if(recording())drainSubmitted();initBloom();}
     if(!recording()){mirrorRequested_=true;return;}
     command<RequestMirrorCommand>();
 }

@@ -58,6 +58,7 @@
 #include <mkw/menu_profile.hpp>
 #include <mkw/asset_loader.hpp>
 #include <mkw/asset_pack.hpp>
+#include <mkw/trace.hpp>
 #include <game/kart/Status.hh>
 #include <abstract/File.hh>
 #include <egg/core/ExpHeap.hh>
@@ -448,6 +449,25 @@ int main() {
     // Race frames draw on the second core one frame behind their recording
     // (src/render_thread.cpp); menus draw immediately.
     if(!renderer.startRenderThread())report("render thread unavailable: race frames draw on core 0");
+#ifdef __PPU__
+    // A hang leaves no other trace on the PS3: when the menus or the race stop
+    // advancing for 4 s, say where each thread last was (runtime.log).
+    threadCreate([](void*){
+        unsigned last=mkw::trace::progress.load(),still=0;
+        for(;;){
+            svcSleepThread(1000000000LL);
+            const unsigned now=mkw::trace::progress.load();
+            if(now!=last){last=now;still=0;continue;}
+            if(++still%15!=4)continue;
+            auto name=[](mkw::trace::Thread t){const char* w=mkw::trace::where[t].load();return w?w:"-";};
+            if(FILE* f=fopen("ux0:data/mkw/runtime.log","a")){
+                fprintf(f,"watchdog: no progress for %u s at iteration %u: main '%s', render '%s', job worker '%s'\n",
+                        still,now,name(mkw::trace::Main),name(mkw::trace::Render),name(mkw::trace::Job));
+                fclose(f);
+            }
+        }
+    },nullptr,32*1024,0x3f,-1,true);
+#endif
     mkw::MenuState menu;
     mkw::MenuRenderer menuRenderer;
     // Original animation banks keep palette workspaces; they must not occupy
@@ -530,6 +550,69 @@ int main() {
     // halves, 3-4P quadrants). Player 1's Back on the character grid returns
     // to the engine classes; a ready player's Back reopens their choice. Once
     // everyone has chosen a drift, player 1 continues with the cup.
+#ifdef __PPU__
+    // PS3 multiplayer controllers: each player in turn presses X on a
+    // DualShock 3 or the Move button on a PlayStation Move, which becomes
+    // theirs (hidAssignPlayers). Circle undoes the last choice; with none
+    // made it returns to the main menu (false).
+    bool chooseControllers=false;
+    auto runControllerSelect=[&]()->bool{
+        constexpr unsigned Max=mkw::UiSelection::MaxPlayers;
+        const unsigned n=std::clamp(menu.selection.players,2u,Max);
+        std::array<int,Max> chosen{};unsigned count=0;
+        hidAssignPlayers(nullptr,0);
+        // The menus' backdrop behind the choice.
+        std::vector<mkw::UiQuad> backdrop;
+        {auto page=menu;page.enter(mkw::UiPage::EngineClass);mkw::composeMenu(page,uiRace,backdrop);if(backdrop.size()>1)backdrop.resize(1);}
+        auto box=[&](unsigned p){
+            mkw::Renderer::ScreenView v;constexpr float W=mkw::display::Width;
+            v.w=W*.5f-8;v.h=96;v.canvas=240.f*v.w/v.h;
+            v.x=n==2?W*.25f+4:float(p&1)*W*.5f+4;v.y=n==2?24.f+float(p)*104.f:24.f+float(p>>1)*104.f;
+            return v;
+        };
+        unsigned frame=0;
+        while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
+            hidScanInput();++frame;
+            const u32 confirm=hidDevicesDown(KEY_A),back=hidDevicesDown(KEY_B);
+            for(int d=0;d<32&&count<n;++d){
+                if(!(confirm&(1u<<d)))continue;
+                if(std::find(chosen.begin(),chosen.begin()+count,d)!=chosen.begin()+count)continue;
+                chosen[count++]=d;
+            }
+            if(back){
+                if(!count)return false;
+                // The chooser's controller undoes its choice; once it is
+                // disconnected, any controller can.
+                const u32 owner=1u<<chosen[count-1];
+                if((back&owner)||!(hidDevicesConnected()&owner))--count;
+            }
+            // A chosen controller that has been disconnected is chosen no more.
+            {unsigned kept=0;const u32 live=hidDevicesConnected();for(unsigned i=0;i<count;++i)if(live&(1u<<chosen[i]))chosen[kept++]=chosen[i];count=kept;}
+            if(count==n){hidAssignPlayers(chosen.data(),n);return true;}
+            menuRenderer.request(backdrop,mkw::AssetPriority::Urgent);menuRenderer.update(renderer);
+            renderer.begin({0,0,1000},{0,0,0},{0,1,0});
+            renderer.drawScreenFade(1.f,false);
+            if(menuRenderer.ready(backdrop))menuRenderer.draw(renderer,backdrop,false);
+            renderer.drawScreenText("CONTROLLERS",mkw::display::CenterX-6*2*11*.5f,6,2.f,0xffffffffu);
+            for(unsigned p=0;p<n;++p){
+                renderer.beginView(box(p));
+                renderer.drawScreenFade(.55f,false);
+                char text[16];snprintf(text,sizeof text,"P%u",p+1);
+                renderer.drawScreenText(text,16,16,5.f,0xffd040ffu);
+                if(p<count)renderer.drawScreenText(chosen[p]>=HID_DEVICE_MOVE?"MOVE":"DUALSHOCK 3",16,120,4.f,0xffffffffu);
+                else if(p==count&&(frame/30)%2==0){
+                    renderer.drawScreenText("PRESS X ON A DUALSHOCK 3",16,104,2.5f,0xffffffffu);
+                    renderer.drawScreenText("OR THE MOVE BUTTON",16,140,2.5f,0xffffffffu);
+                }
+            }
+            renderer.beginView(mkw::Renderer::ScreenView{});
+            renderer.drawScreenText(count?"CIRCLE: UNDO":"CIRCLE: BACK",8,228,1.f,0xc0c0c0ffu);
+            renderer.end();
+        }
+        return false;
+    };
+#endif
     auto runSplitSelect=[&](){
         constexpr unsigned Max=mkw::UiSelection::MaxPlayers;
         const unsigned n=std::clamp(menu.selection.players,2u,Max);
@@ -554,6 +637,7 @@ int main() {
         };
         auto last=svcGetSystemTick();double pending=0;
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             hidScanInput();
             bool leave=false;
             for(unsigned p=0;p<n&&!leave;++p){
@@ -600,7 +684,12 @@ int main() {
                 char label[16];snprintf(label,sizeof label,ready[p]?"P%u READY":"P%u",p+1);
                 renderer.drawScreenText(label,14,14,3.f,ready[p]?0x60ff60ffu:0xffffffffu);
                 // A player without a controller cannot choose: say so (player 1 can still back out).
-                if(p>=hidPadCount())renderer.drawScreenText("CONNECT A CONTROLLER",14,200,2.f,0xff6060ffu);
+                bool connected=p<hidPadCount();
+#ifdef __PPU__
+                // An assigned controller that has been disconnected (it resumes on reconnecting).
+                if(connected){const int d=hidPadDevice(p);connected=d>=0&&(hidDevicesConnected()&(1u<<d));}
+#endif
+                if(!connected)renderer.drawScreenText("CONNECT A CONTROLLER",14,200,2.f,0xff6060ffu);
             }
             renderer.beginView(mkw::Renderer::ScreenView{});
             renderer.end();
@@ -622,6 +711,7 @@ int main() {
             bool ready=menuRenderer.prepare(paused);
             if(!ready){menuRenderer.release(renderer);renderer.waitForGpu();ready=menuRenderer.prepare(paused);}
             while(!ready&&aptMainLoop()){
+                mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
                 hidScanInput();const unsigned down=hidKeysDown();
                 if(down&(KEY_B|KEY_START)){menu.enter(mkw::UiPage::Race);return mkw::UiAction::ResumeRace;}
                 if(down&KEY_A){menuRenderer.release(renderer);renderer.waitForGpu();ready=menuRenderer.prepare(paused);}
@@ -652,10 +742,19 @@ int main() {
             renderer.waitForGpu();return action;
         };
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             // The logical page becomes Race while the pause exit still animates.
             // Keep the resident course for ResumeRace; only release when leaving
             // the race section for an unrelated menu or a different race.
             if(raceResident&&!menu.retainsRaceAssets())releaseRace();
+#ifdef __PPU__
+            if(chooseControllers&&revealed&&!transition.active()){
+                chooseControllers=false;
+                if(!runControllerSelect()){const unsigned players=menu.selection.players;menu.enter(mkw::UiPage::MainMenu);menu.cursor=players-1;}
+                transition=mkw::MenuTransition{};visualKeyed=incomingKeyed=prefetched=false;stable=0;
+                last=svcGetSystemTick();pending=0;continue;
+            }
+#endif
             if(menu.selection.players>1&&revealed&&!transition.active()&&
                (menu.page==mkw::UiPage::Character||menu.page==mkw::UiPage::Vehicle||menu.page==mkw::UiPage::Drift)){
                 runSplitSelect();
@@ -670,6 +769,14 @@ int main() {
             if(autoplay){input=autopilot->menu(menu,revealed&&!transition.active());if(autopilot->finished())return leave(mkw::UiAction::Exit);}
             const auto beforeInput=menu;
             auto action=transition.input(menu,input);
+#ifdef __PPU__
+            // Multiplayer: the players choose their controllers once the class page is up;
+            // single player takes the controllers in the order the PS3 found them.
+            if(beforeInput.page==mkw::UiPage::MainMenu&&menu.page!=mkw::UiPage::MainMenu){
+                chooseControllers=menu.selection.players>1;
+                if(!chooseControllers)hidAssignPlayers(nullptr,0);
+            }
+#endif
             menuSound.input(beforeInput,menu,input,action);
             if(action!=mkw::UiAction::None){if(action==mkw::UiAction::StartRace||action==mkw::UiAction::RestartRace)menuSound.leave();return leave(action);}
             auto now=svcGetSystemTick();pending+=std::min(double(now-last)/SYSCLOCK_ARM11,.1)*60;last=now;
@@ -1514,6 +1621,7 @@ int main() {
         auto drawBoard=[](void* context){auto& b=*static_cast<Board*>(context);b.ui->drawResults(*b.renderer,*b.flow);};
         auto last=svcGetSystemTick();double pending=0;
         while(aptMainLoop()){
+            mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
             hidScanInput();
             // A, B or START: on to the standings, then out.
             if((hidKeysDown()&(KEY_A|KEY_B|KEY_START))&&ceremony->skippable())ceremony->advance();
@@ -1532,6 +1640,8 @@ int main() {
     };
     renderer.setDeferred(deferredRace);
     while(aptMainLoop()){
+        mkw::trace::progress.fetch_add(1,std::memory_order_relaxed);
+        mkw::trace::at(mkw::trace::Main,"race: frame start");
         // Poll controls and advance source state once per top-screen refresh.
         // Submit once per presentation slot. FrameBegin below retires
         // the prior GPU queue without inserting a second VBlank wait.
@@ -1794,6 +1904,7 @@ int main() {
                     }
                     // Resolve item activation/expiry before choosing this tick's
                     // controller, including CPU Bullet Bills and the handoff back.
+                    mkw::trace::at(mkw::trace::Main,"race: grid before step");
                     raceGrid.beforeStep(raceItems->bulletPlayers());
                 }
                 if(autoplay&&cpuLogEvery&&fullRace&&physicsSteps%cpuLogEvery==0){
@@ -1812,7 +1923,9 @@ int main() {
                 }
                 // QA: a fall boundary (variant 0) activation, so the retail SetCamera hold applies.
                 if(autoplay&&lakituRespawnStep&&physicsSteps==lakituRespawnStep){auto* qaCollide=K::Kart::KartObjectManager::Instance()->object(0)->collide();qaCollide->setOobCameraPending(uint16_t(lakituRequest));qaCollide->activateOob(false,nullptr,false,false);}
+                mkw::trace::at(mkw::trace::Main,"race: Kinoko step");
                 scenes.calc();
+                mkw::trace::at(mkw::trace::Main,"race: after Kinoko step");
                 {
                     // The player's driver model after the kart step: its trick animation,
                     // sparkle and sound start together (trick_presentation.hpp).
@@ -1976,6 +2089,7 @@ int main() {
                             for(unsigned i=0;i<std::min<unsigned>(raceGrid.count(),kartContacts.size());++i)
                                 K::Kart::KartObjectManager::Instance()->object(i)->move()->takeSoundCues();
                         }
+                        mkw::trace::at(mkw::trace::Main,"race: sound step");
                         raceSound.step(audio,&actors);
                         // QA: race audio counters every 600 ticks (in memory; written with the profile).
                         if(menuProfile->enabled()&&raceSound.active()&&physicsSteps%600==0){
@@ -2276,6 +2390,7 @@ int main() {
                         }
                         raceEffects.setGroups(calcGroups,drawGroups);
                     }
+                    mkw::trace::at(mkw::trace::Main,"race: effects step");
                     raceEffects.step();
                     {mkw::Vec3 eye,target;presentationCamera(eye,target);raceEffects.setCamera(eye,target,{0,1,0});
                      // The clip manager (0x80783344) after the camera: each racer's sphere on
@@ -2348,6 +2463,7 @@ int main() {
                  const mkw::Vec3 chase=chaseCamera.eye(),look=chaseCamera.pivot()+mkw::Vec3{0,params.targetPosY-cameraKart->cameraDistY(),0};
                  renderer.setStereoSubject(mkw::stereo::Race,dot(vec(cameraKart->pos())-chase,mkw::normalized(look-chase)));
              }else if(renderer.stereoCapable())renderer.setStereoSubject(mkw::stereo::Race,dot(vec(cameraKart->pos())-eye,mkw::normalized(target-eye)));
+             mkw::trace::at(mkw::trace::Main,"race: renderer begin");
              renderer.begin(eye,target,{0,1,0});}
             // The views: 2P top and bottom halves (a 16:4.5 canvas twice the
             // width), 3-4P quadrants (the full-screen canvas at half size).
@@ -2426,8 +2542,10 @@ int main() {
             courseObjects.drawSky(renderer,physicsSteps,renderer.cameraPosition());
             for(auto& model:track)renderer.draw(*model,transform);
             profiler->mark(Profile::Course);
+            mkw::trace::at(mkw::trace::Main,"draw: course objects");
             courseObjects.draw(renderer,physicsSteps,renderer.cameraPosition());profiler->mark(Profile::Scenery);
             renderer.setCourseLighting(false);
+            mkw::trace::at(mkw::trace::Main,"draw: opponents");
             if(fullRace)opponents.draw(renderer,*raceItems,viewer,physicsSteps,
                 playerCastsShadow?vehicleShadow.get():nullptr,&playerShadowTransform);
             else if(playerCastsShadow){mkw::Renderer::ShadowVolume shadow{vehicleShadow.get(),playerShadowTransform};renderer.drawShadowVolumes(&shadow,1,.5f);}
@@ -2463,6 +2581,7 @@ int main() {
             // Lakitu attends player 1 only.
             if(fullRace&&viewPlayer==0)lakitu.draw(renderer);
             profiler->mark(Profile::Items);
+            mkw::trace::at(mkw::trace::Main,"draw: player pose");
             if(playerJobQueued)mkw::jobWorker().finish(playerJob);else if(!playerPosed)posePlayer();
             playerJobQueued=false;playerPosed=true;
             auto drawSkinned=[&](const mkw::DriverAnimation* bank,const mkw::Model& model,const C3D_Mtx& matrix){
@@ -2496,6 +2615,7 @@ int main() {
             courseObjects.drawWater(renderer);
             renderer.setCourseLighting(false);
             renderer.drawSparks(driftEffects,sparkTexture);
+            mkw::trace::at(mkw::trace::Main,"draw: effects");
             renderer.drawEffects(raceEffects,effectTextures->data());
             mkw::jobWorker().finishAll();
             renderer.applyBloom();
@@ -2517,6 +2637,7 @@ int main() {
                     bottomView.milliseconds=uint32_t(left)*1000u/60u;
                     for(unsigned i=0;i<std::min(bottomView.racers,12u);++i)bottomView.racer[i].team=uint8_t(mkw::BalloonBattle::team(i));
                 }
+                mkw::trace::at(mkw::trace::Main,"hud: map");
                 bottomScreen.drawMini(renderer,bottomView);
             }
             if(fullRace&&!intro.active()){auto* race=K::System::RaceManager::Instance();
@@ -2526,6 +2647,7 @@ int main() {
                                 mkw::BalloonBattle::team(0),balloonBattle.popup(),balloonBattle.popupAge()};
                 // Splitscreen: each player's FINISH runs from its own goal.
                 const int finishFrame=!splitscreen()?results.finishFrame():localFinishStep[viewPlayer]==~0u?-1:int(physicsSteps-localFinishStep[viewPlayer]);
+                mkw::trace::at(mkw::trace::Main,"hud: overlay");
                 raceHud.setPlayer(viewPlayer);
                 raceHud.drawOverlay(renderer,*raceItems,unsigned(race->stage()),race->timer(),battleMode?balloonBattle.rank(0):raceGrid.rank(viewPlayer),raceGrid.lap(viewPlayer),battleMode?battleOver:raceGrid.finished(viewPlayer),physicsSteps,finishFrame,results.hudSlide());
                 if(timeTrial&&courseChoice<bestTimes.size()&&!results.hudGone()){
@@ -2578,7 +2700,8 @@ int main() {
             }
         }else renderer.begin({0,100,500},{0,0,0},{0,1,0});
         if(frames==0)report("graphics first frame submitting");
-        renderer.end();profiler->mark(Profile::Submit);profiler->end(physicsSteps,renderer);frames++;
+        mkw::trace::at(mkw::trace::Main,"race: renderer end");
+        renderer.end();profiler->mark(Profile::Submit);mkw::trace::at(mkw::trace::Main,"race: frame submitted");profiler->end(physicsSteps,renderer);frames++;
         if(raceLoadStart){
             const double ms=double(svcGetSystemTick()-raceLoadStart)*1000.0/SYSCLOCK_ARM11;raceLoadStart=0;lastRaceFrame=0;
             LOGF("race_load_ms=%.1f course=%s driver=%u vehicle=%u failed=%d",ms,Courses[courseChoice].name,driverChoice,vehicleChoice,int(trackLoadFailed));menuProfile->event(line);

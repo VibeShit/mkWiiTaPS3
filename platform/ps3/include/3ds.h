@@ -111,6 +111,15 @@ u32 hidPadKeysHeld(unsigned player);
 u32 hidPadKeysDown(unsigned player);
 u32 hidPadKeysDownRepeat(unsigned player);
 void hidPadCircleRead(unsigned player, circlePosition* pos);
+// PS3 controllers (not libctru): devices are DualShock 3 ports 0..6 and
+// PlayStation Moves HID_DEVICE_MOVE + 0..3, as bits of a mask. Players take
+// the connected DualShock 3s, then the Moves, unless hidAssignPlayers (count
+// 0 restores that order) chose their devices.
+#define HID_DEVICE_MOVE 16
+u32 hidDevicesDown(u32 keys);
+u32 hidDevicesConnected(void);
+void hidAssignPlayers(const int* devices, unsigned count);
+int hidPadDevice(unsigned player);
 // Splitscreen GPU controls (not citro3d): mirrored views swap the culled
 // face; the top screen's target renders at its internal resolution / divisor.
 void c3dport_SetCullSwap(bool swap);

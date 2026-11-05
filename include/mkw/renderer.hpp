@@ -151,6 +151,9 @@ public:
     bool deferred() const {return deferred_;}
     // Waits until the render thread has drawn every recorded frame.
     void drain();
+    // Waits for the frames already submitted, leaving the one being recorded
+    // open: for one-time resource setup in the middle of a frame.
+    void drainSubmitted();
     // Race bottom screen (docs/BOTTOM_SCREEN.md): a 320x240 RGBA8 VRAM target
     // without depth, transferred to the lower LCD only in frames that draw it.
     // Create and release with the render thread idle, outside a frame:

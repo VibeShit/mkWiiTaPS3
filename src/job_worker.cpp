@@ -1,3 +1,4 @@
+#include <mkw/trace.hpp>
 #include <mkw/job_worker.hpp>
 #include <mkw/fpu_mode.hpp>
 #include <mkw/render_metrics.hpp>
@@ -74,7 +75,9 @@ void JobWorker::loop(){
             Job& job=*jobs_[i];
             if(claim(job)){
                 const auto start=svcGetSystemTick();
+                mkw::trace::at(mkw::trace::Job,"running a job");
                 execute(job);
+                mkw::trace::at(mkw::trace::Job,"idle");
                 renderMetrics.workerMs+=float((svcGetSystemTick()-start)*1000.0/SYSCLOCK_ARM11);
                 LightEvent_Signal(&done_);
             }
