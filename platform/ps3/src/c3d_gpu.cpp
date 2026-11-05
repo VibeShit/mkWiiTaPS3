@@ -65,6 +65,11 @@ constexpr uint32_t LinearSize = 64u << 20;
 constexpr uint32_t ScratchSize = 16u << 20;
 constexpr uint32_t IoSize = CommandSize + LinearSize + ScratchSize;
 constexpr u8 FenceLabel = 255;
+// Marks how far the RSX has read each command buffer half (switchCommandHalf).
+constexpr u8 HalfLabel = 254;
+// Room kept free at the end of a half: more than any one draw, clear or
+// present writes (its state, textures, programs and 25 constant registers).
+constexpr uint32_t CommandReserveWords = 64u << 10;
 constexpr const char* DataDir = "ux0:data/mkw"; // mapped onto the hard disk (ctru_file.cpp)
 
 // Internal resolution: render targets are this many times their canvas size.
@@ -100,17 +105,29 @@ uint32_t completedFence() { return fenceLabel ? *fenceLabel : 0; }
 bool passed(uint32_t completed, uint32_t fence) { return int32_t(completed - fence) >= 0; }
 // The fence a resource released now must wait for.
 uint32_t releaseFence() { return submittedFence.load() + (inFrame.load() ? 1 : 0); }
-// The command buffer is two halves, one per frame, so GCM's segment callback
-// never runs (PSL1GHT's commands keep context->current in a register across
-// it and write to the old segment). A frame ends with its fence and a jump to
-// the other half, written before PUT passes them; FrameBegin waits for the
-// frame that last used that half.
+// The command buffer is two halves, so GCM's segment callback never runs
+// (PSL1GHT's commands keep context->current in a register across it and write
+// to the old segment). Each frame ends with its fence and a jump to the other
+// half. A frame that fills its half (splitscreen draws every view) jumps to
+// the other half too, before the callback could run (ensureCommandSpace). A
+// half is entered only once the RSX has read it to the label written as it
+// was left, so no command still pending there is overwritten.
 u32* commandBegin = nullptr;
 uint32_t commandHalfWords = 0;
 unsigned commandHalf = 0;
+volatile uint32_t* halfLabel = nullptr;
+uint32_t halfMark = 0, halfLeft[2] = {};
+unsigned commandWraps = 0; // mid-frame switches since the last stats line
 u32* checkedTo = nullptr; // DEBUG: checkCommands
 const char* lastCheck = "start";
+bool passed(uint32_t completed, uint32_t fence);
+void reportStall(const char* what, uint32_t want, uint32_t have);
+uint32_t peakHalfWords = 0; // the fullest a half got since the last stats line
 void switchCommandHalf() {
+	// A half holds one frame, or the part of one that fit (present included).
+	peakHalfWords = std::max(peakHalfWords, uint32_t(context->current - context->begin));
+	halfLeft[commandHalf] = ++halfMark;
+	rsxSetWriteBackendLabel(context, HalfLabel, halfMark);
 	commandHalf ^= 1;
 	u32* begin = commandBegin + commandHalf * commandHalfWords;
 	uint32_t offset = 0;
@@ -119,8 +136,24 @@ void switchCommandHalf() {
 	context->begin = begin;
 	context->current = begin;
 	context->end = begin + commandHalfWords - 1;
+	// PUT moves into the entered half: the RSX runs up to the jump and follows it.
+	rsxFlushBuffer(context);
+	const uint64_t start = nowUs();
+	bool reported = false;
+	while (!passed(*halfLabel, halfLeft[commandHalf])) {
+		usleep(30);
+		if (!reported && nowUs() - start > 2000000) { reported = true; reportStall("half label", halfLeft[commandHalf], *halfLabel); }
+	}
 	checkedTo = begin;
-	lastCheck = "frame start";
+	lastCheck = "half start";
+}
+void checkCommands(const char* where);
+// Before writing a draw, clear or present: a half without room for it is left.
+void ensureCommandSpace() {
+	if (uint32_t(context->end - context->current) >= CommandReserveWords) return;
+	checkCommands("before half switch");
+	switchCommandHalf();
+	++commandWraps;
 }
 void writeFence(bool frameEnd = false) {
 	const uint32_t value = submittedFence.load() + 1;
@@ -129,8 +162,24 @@ void writeFence(bool frameEnd = false) {
 	rsxFlushBuffer(context);
 	submittedFence.store(value);
 }
+// A wait over 2 s means the RSX stopped: say where it is reading (ps3.log).
+void reportStall(const char* what, uint32_t want, uint32_t have) {
+	const gcmControlRegister* control = gcmGetControlRegister();
+	const uint32_t half = commandHalfWords * 4;
+	uint32_t base = 0;
+	rsxAddressToOffset(commandBegin, &base);
+	std::printf("c3dps3: RSX stalled waiting for %s %u (at %u): get +0x%x put +0x%x (halves of 0x%x, writing half %u at +0x%x), last commands '%s'\n",
+		what, unsigned(want), unsigned(have), unsigned(control->get - base), unsigned(control->put - base), unsigned(half), commandHalf,
+		unsigned((context->current - commandBegin) * 4), lastCheck);
+	std::fflush(stdout);
+}
 void waitFence(uint32_t value) {
-	while (!passed(completedFence(), value)) usleep(30);
+	const uint64_t start = nowUs();
+	bool reported = false;
+	while (!passed(completedFence(), value)) {
+		usleep(30);
+		if (!reported && nowUs() - start > 2000000) { reported = true; reportStall("fence", value, completedFence()); }
+	}
 }
 // Everything submitted so far has completed (render thread).
 void waitIdle() { writeFence(); waitFence(submittedFence.load()); }
@@ -697,6 +746,7 @@ void invalidateApplied() {
 // before the target is drawn, sampled or presented.
 void flushClear(Target* t) {
 	if (!t->clearColor && !t->clearDepth) return;
+	ensureCommandSpace();
 	bindSurface(t->colorOffset, t->colorPitch, t->depthOffset, t->depthPitch, t->width, t->height);
 	rsxSetScissor(context, 0, 0, 4095, 4095);
 	u32 mask = 0;
@@ -946,6 +996,7 @@ struct FrameStats {
 
 // Vertex range [first, end) of a draw, for skinning.
 void prepareDraw(uint32_t first, uint32_t end) {
+	ensureCommandSpace();
 	const bool skinned = state.program == ProgramScene && (C3D_BoolUnifs[0] & 8);
 	FragmentKey key;
 	std::memset(&key, 0, sizeof key);
@@ -1016,6 +1067,7 @@ void afterDraw() {
 
 // The quad that shows a portrait target on the landscape display.
 void present(Target* top) {
+	ensureCommandSpace();
 	flushClear(top); // cleared but never drawn: show the clear
 	bindSurface(displayOffset[backBuffer], displayPitch, displayDepthOffset, displayDepthPitch, int(displayWidth), int(displayHeight));
 	// The display's rows run top to bottom: NDC y = +1 is row 0.
@@ -1119,6 +1171,8 @@ void initDisplay() {
 	scratchBase = static_cast<uint8_t*>(io) + CommandSize + LinearSize;
 	fenceLabel = gcmGetLabelAddress(FenceLabel);
 	*fenceLabel = 0;
+	halfLabel = gcmGetLabelAddress(HalfLabel);
+	*halfLabel = 0;
 
 	// The output the system is set to (720p, 1080i/p, 480p...).
 	videoState video;
@@ -1482,6 +1536,7 @@ bool C3D_FrameDrawOn(C3D_RenderTarget* target) {
 }
 void C3D_FrameSplit(u8) { rsxFlushBuffer(context); }
 void C3D_FrameEnd(u8) {
+	bool report = false;
 	if (topOutput && topOutput->c3d.used) {
 		if (stats.frameStartUs) stats.workUs += nowUs() - stats.frameStartUs;
 		present(topOutput);
@@ -1498,19 +1553,23 @@ void C3D_FrameEnd(u8) {
 		c3dps3::programsCreated = 0;
 		c3dps3::programUs = 0;
 		stats.lastPresentUs = now;
-		if (++stats.frames == 300) {
-			std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms\n",
-				stats.frameUs ? 299e6 / double(stats.frameUs) : 0.0, stats.draws / 300, stats.skinned / 300,
-				double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3);
-			const uint64_t keep = stats.lastPresentUs;
-			stats = {};
-			stats.lastPresentUs = keep;
-		}
+		report = ++stats.frames == 300;
 	}
 	checkCommands("frame end");
 	writeFence(true);
 	inFrame.store(false);
 	++frameNumber;
+	// After writeFence: its switch has measured this frame's half too.
+	if (report) {
+		std::printf("c3dps3: %.1f fps, %u draws/frame (%u skinned), wait %.2f ms, draw thread %.2f ms, in draw calls %.2f ms, commands peak %u KiB of %u, %u half switches\n",
+			stats.frameUs ? 299e6 / double(stats.frameUs) : 0.0, stats.draws / 300, stats.skinned / 300,
+			double(stats.beginWaitUs) / 300e3, double(stats.workUs) / 300e3, double(stats.drawUs) / 300e3,
+			unsigned(peakHalfWords / 256), unsigned(commandHalfWords / 256), commandWraps);
+		commandWraps = 0; peakHalfWords = 0;
+		const uint64_t keep = stats.lastPresentUs;
+		stats = {};
+		stats.lastPresentUs = keep;
+	}
 }
 void C3D_FrameEndHook(void (*)(void*), void*) {}
 float C3D_GetDrawingTime(void) { return 0.f; }

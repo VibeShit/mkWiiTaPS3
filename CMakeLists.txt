@@ -137,7 +137,9 @@ if(MKW_PLATFORM STREQUAL "ps3")
   target_link_directories(mkw PRIVATE ${PSL1GHT}/ppu/lib ${PS3DEV}/portlibs/ppu/lib)
   target_link_libraries(mkw PRIVATE
     kinoko ctrport rsxasm
-    rsx gcm_sys io audio sysutil rt lv2 m stdc++)
+    rsx gcm_sys io audio sysutil rt lv2 m stdc++
+    # PlayStation Move (platform/ps3/src/ctru_sys.cpp): libgem on SPURS.
+    gem camera spurs sysmodule)
 
   # mkw.elf -> mkw.self (run from a homebrew loader) and mkw.pkg (install from
   # the XMB's Package Manager), as PSL1GHT's ppu_rules make them.
