@@ -435,12 +435,30 @@ const PadState* player(unsigned index) {
 extern "C" void hidScanInput(void) {
 	if (!inputReady) { ioPadInit(7); inputReady = true; }
 	if (!gemTried) initGem();
+	gemInfo moveInfo{};
+	const bool movesOk = gemReady && gemGetInfo(&moveInfo) == 0;
+	// A connected Move is also listed by libpad, as an ordinary pad on its own
+	// port (gemInfo::port, counted from 1). Read through libpad it has no
+	// shoulder buttons (no item) and no stick (no steering), so its port is
+	// left to libgem and never taken as a DualShock 3.
+	bool movePort[DualShockPorts] = {};
+	if (movesOk)
+		for (int m = 0; m < Moves; ++m)
+			if (moveInfo.status[m] == 1 && moveInfo.port[m] >= 1 && moveInfo.port[m] <= u32(DualShockPorts))
+				movePort[moveInfo.port[m] - 1] = true;
+	// Log each change of the Moves' ports, for controller reports.
+	static u32 loggedPorts = ~0u;
+	u32 ports = 0;
+	for (int m = 0; m < Moves; ++m) if (movesOk && moveInfo.status[m] == 1) ports |= (moveInfo.port[m] & 0xFF) << (8 * m);
+	if (ports != loggedPorts) {
+		loggedPorts = ports;
+		for (int m = 0; m < Moves; ++m)
+			if (ports >> (8 * m) & 0xFF) std::printf("move %d: connected, pad port %u\n", m, unsigned(ports >> (8 * m) & 0xFF));
+	}
 	padInfo info{};
 	const bool ok = ioPadGetInfo(&info) == 0;
 	for (int port = 0; port < DualShockPorts; ++port)
-		scanDualShock(dualShocks[port], port, ok && port < int(info.max) && info.status[port]);
-	gemInfo moveInfo{};
-	const bool movesOk = gemReady && gemGetInfo(&moveInfo) == 0;
+		scanDualShock(dualShocks[port], port, ok && port < int(info.max) && info.status[port] && !movePort[port]);
 	for (int m = 0; m < Moves; ++m)
 		scanMove(moves[m], m, movesOk && u32(m) < moveInfo.max && moveInfo.status[m] == 1);
 	playerCount = 0;

@@ -5752,7 +5752,7 @@ index e9ab671..3246dfe 100644
  
      typedef std::function<void(RaceConfig *, void *)> InitCallback;
 diff --git a/source/game/system/RaceManager.cc b/source/game/system/RaceManager.cc
-index 42decd3..a574c85 100644
+index 42decd3..6232180 100644
 --- a/source/game/system/RaceManager.cc
 +++ b/source/game/system/RaceManager.cc
 @@ -13,14 +13,16 @@ namespace Kinoko::System {
@@ -5777,7 +5777,7 @@ index 42decd3..a574c85 100644
      u32 startPointIdx = 0;
  
      MapdataStartPoint *kartpoint = CourseMap::Instance()->getStartPoint(startPointIdx);
-@@ -34,9 +36,12 @@ void RaceManager::findKartStartPoint(EGG::Vector3f &pos, EGG::Vector3f &angles)
+@@ -34,9 +36,24 @@ void RaceManager::findKartStartPoint(EGG::Vector3f &pos, EGG::Vector3f &angles)
  }
  
  /// @addr{0x80533C6C}
@@ -5790,15 +5790,28 @@ index 42decd3..a574c85 100644
 +    m_players[idx].setFinishOrder(++m_finishCount);
 +    if (m_finishCount == m_playerCount) m_stage = Stage::FinishGlobal;
 +    else if (idx == 0) m_stage = Stage::FinishLocal;
++}
++
++/// Port: once every other racer has finished, the last one still driving
++/// (a player who came last) finishes where it is, on the current time, so
++/// the race ends and the results follow instead of waiting for its goal.
++/// Solo races (time trials, ghost replays) are left alone.
++void RaceManager::endLastRacer() {
++    if (m_playerCount < 2 || m_finishCount + 1u != m_playerCount) return;
++    if (m_stage != Stage::Race && m_stage != Stage::FinishLocal) return;
++    for (size_t i = 0; i < m_playerCount; ++i) {
++        if (!m_players[i].finished()) m_players[i].endRace(m_timerManager.currentTimer());
++    }
  }
  
  /// @addr{0x805331B4}
-@@ -44,11 +49,11 @@ void RaceManager::calc() {
+@@ -44,11 +61,12 @@ void RaceManager::calc() {
      constexpr u16 STAGE_INTRO_DURATION = 172;
  
      m_timerManager.calc();
 -    m_player.calc();
 +    for (size_t i = 0; i < m_playerCount; ++i) m_players[i].calc();
++    endLastRacer();
  
      switch (m_stage) {
      case Stage::Intro:
@@ -5807,7 +5820,7 @@ index 42decd3..a574c85 100644
              m_stage = Stage::Countdown;
              KPadDirector::Instance()->startGhostProxies();
          }
-@@ -60,6 +65,7 @@ void RaceManager::calc() {
+@@ -60,6 +78,7 @@ void RaceManager::calc() {
          }
          break;
      case Stage::Race:
@@ -5815,7 +5828,7 @@ index 42decd3..a574c85 100644
          ++m_timer;
          break;
      default:
-@@ -68,8 +74,8 @@ void RaceManager::calc() {
+@@ -68,8 +87,8 @@ void RaceManager::calc() {
  }
  
  /// @addr{0x8053621C}
@@ -5826,7 +5839,7 @@ index 42decd3..a574c85 100644
      return System::CourseMap::Instance()->getJugemPoint(static_cast<u16>(jugemId));
  }
  
-@@ -90,7 +96,10 @@ void RaceManager::DestroyInstance() {
+@@ -90,7 +109,10 @@ void RaceManager::DestroyInstance() {
  
  /// @addr{0x805327A0}
  RaceManager::RaceManager()
@@ -5838,7 +5851,7 @@ index 42decd3..a574c85 100644
  
  /// @addr{0x80532E3C}
  RaceManager::~RaceManager() {
-@@ -123,11 +132,17 @@ RaceManager::Player::Player() {
+@@ -123,11 +145,17 @@ RaceManager::Player::Player() {
  }
  
  /// @addr{0x80534194}
@@ -5858,7 +5871,7 @@ index 42decd3..a574c85 100644
          f32 distanceRatio;
          s16 checkpointId = courseMap->findSector(pos, 0, distanceRatio);
  
-@@ -140,8 +155,9 @@ void RaceManager::Player::init() {
+@@ -140,8 +168,9 @@ void RaceManager::Player::init() {
  
  /// @addr{0x80535304}
  void RaceManager::Player::calc() {
@@ -5869,7 +5882,7 @@ index 42decd3..a574c85 100644
  
      if (courseMap->getCheckPointCount() == 0 || courseMap->getCheckPathCount() == 0 ||
              kart->status().onBit(Kart::eStatus::BeforeRespawn)) {
-@@ -275,7 +291,7 @@ void RaceManager::Player::incrementLap() {
+@@ -275,7 +304,7 @@ void RaceManager::Player::incrementLap() {
          return;
      }
  
@@ -5878,7 +5891,7 @@ index 42decd3..a574c85 100644
      u16 addMs = CourseMap::Instance()->getCheckPointEntryOffsetMs(m_checkpointId, kart->pos(),
              kart->prevPos());
  
-@@ -295,8 +311,9 @@ void RaceManager::Player::incrementLap() {
+@@ -295,8 +324,9 @@ void RaceManager::Player::incrementLap() {
  
  /// @addr{0x805347F4}
  void RaceManager::Player::endRace(const Timer &finishTime) {
@@ -5890,10 +5903,16 @@ index 42decd3..a574c85 100644
  
  RaceManager *RaceManager::s_instance = nullptr; ///< @addr{0x809BD730}
 diff --git a/source/game/system/RaceManager.hh b/source/game/system/RaceManager.hh
-index 0faeaf7..1f9b193 100644
+index 0faeaf7..dfc8594 100644
 --- a/source/game/system/RaceManager.hh
 +++ b/source/game/system/RaceManager.hh
-@@ -33,12 +33,18 @@ public:
+@@ -29,16 +29,24 @@ class RaceManager : EGG::Disposer {
+ 
+ public:
+     class Player {
++        friend class RaceManager;
++
+     public:
          Player();
          virtual ~Player() {}
  
@@ -5913,7 +5932,7 @@ index 0faeaf7..1f9b193 100644
          [[nodiscard]] u16 checkpointId() const {
              return m_checkpointId;
          }
-@@ -82,6 +88,9 @@ public:
+@@ -82,6 +90,9 @@ public:
          void incrementLap();
          void endRace(const Timer &finishTime);
  
@@ -5923,16 +5942,18 @@ index 0faeaf7..1f9b193 100644
          u16 m_checkpointId;
          f32 m_raceCompletion;
          f32 m_checkpointFactor; ///< The proportion of a lap for the current checkpoint
-@@ -107,7 +116,7 @@ public:
+@@ -107,8 +118,9 @@ public:
  
      void init();
  
 -    void findKartStartPoint(EGG::Vector3f &pos, EGG::Vector3f &angles);
 +    void findKartStartPoint(EGG::Vector3f &pos, EGG::Vector3f &angles, size_t index = 0);
      void endPlayerRace(u32 idx);
++    void endLastRacer();
  
      void calc();
-@@ -118,7 +127,7 @@ public:
+ 
+@@ -118,7 +130,7 @@ public:
                  static_cast<std::underlying_type_t<Stage>>(stage);
      }
  
@@ -5941,7 +5962,7 @@ index 0faeaf7..1f9b193 100644
  
      /// @beginGetters
      /// @addr{0x80533090}
-@@ -130,14 +139,22 @@ public:
+@@ -130,14 +142,22 @@ public:
          return m_random;
      }
  
@@ -5966,7 +5987,7 @@ index 0faeaf7..1f9b193 100644
      [[nodiscard]] Stage stage() const {
          return m_stage;
      }
-@@ -161,10 +178,13 @@ private:
+@@ -161,10 +181,13 @@ private:
      ~RaceManager() override;
  
      Random m_random;

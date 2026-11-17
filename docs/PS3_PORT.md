@@ -71,7 +71,10 @@ Connect a DualShock 3 or a PlayStation Move per player, then choose
 The race uses the Wii's layouts: two players get the top and bottom halves,
 three or four players get quadrants. With three players the fourth quadrant
 shows the course map with every racer. Each view has its own camera and HUD;
-the result boards appear once every player has crossed the line. Any
+the result boards appear once every player has crossed the line. Once
+every other racer has finished, the last one still driving finishes where
+it is (last place), as on the Wii, so a player who comes last does not hold
+up the results. Any
 player's START pauses. Course bloom is off in splitscreen.
 
 ## Controls
@@ -103,9 +106,13 @@ sideways like the Wii Wheel, buttons facing you, and tilt it to turn.
 | Cross | Use item |
 | Square | Throw item backwards |
 | Circle | Look behind / back in menus |
-| Triangle or a shake | Trick / bike wheelie |
+| Triangle or a shake | Trick (off a ramp or in the air) / bike wheelie |
 | Start | Pause |
 | Select | Set "straight ahead" to how you hold it now |
+
+The PS3 also lists a Move as an ordinary pad; the game ignores that pad and
+reads the Move through its motion sensors (`ps3.log` names each Move's pad
+port).
 
 A Move takes "straight ahead" from how it is held when it is chosen (or
 first seen); press Select to set it again.
