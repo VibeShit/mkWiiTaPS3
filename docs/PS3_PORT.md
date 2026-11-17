@@ -50,7 +50,7 @@ Splitscreen and PlayStation Move (see below) add these lines:
 |---|---|---|
 | `splitDivisor` | `2` | The internal resolution is divided by this while 2-4 players race (`1` to `4`) |
 | `splitRacers` | `8` | Racers in a splitscreen Grand Prix: the players plus CPUs (`4` to `12`) |
-| `moveSteerAngle` | `30` | PlayStation Move: degrees of tilt for a full turn (`5` to `90`) |
+| `moveSteerAngle` | `60` | PlayStation Move: degrees of tilt for a full turn (`5` to `90`); higher is less sensitive |
 | `moveSteerInvert` | `0` | PlayStation Move: `1` if tilting turns the wrong way |
 
 ## Multiplayer (splitscreen Grand Prix)

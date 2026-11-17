@@ -332,9 +332,9 @@ struct MoveTilt {
 };
 MoveTilt tilt[Moves];
 bool gemReady = false, gemTried = false;
-// quality.txt: moveSteerAngle (degrees of tilt for a full turn, default 30),
+// quality.txt: moveSteerAngle (degrees of tilt for a full turn, default 60),
 // moveSteerInvert (1 turns the other way).
-float steerAngle = 30.f * 3.14159265f / 180.f;
+float steerAngle = 60.f * 3.14159265f / 180.f;
 bool steerInvert = false;
 float lane(const vec_float4& v, int i) { float f[4]; std::memcpy(f, &v, sizeof f); return f[i]; }
 void initGem() {
@@ -437,8 +437,12 @@ void scanMove(PadState& s, int m, bool connected, int padPort) {
 		if (!t.neutralSet || (buttons & MoveSelect)) { t.roll0 = roll; t.pitch0 = pitch; t.neutralSet = true; }
 		float turn = wrapAngle(roll - t.roll0) / steerAngle;
 		if (steerInvert) turn = -turn;
-		if (std::fabs(turn) < .08f) turn = 0; // a small dead zone keeps straight lines straight
-		turn = std::clamp(turn, -1.f, 1.f);
+		// A dead zone keeps straight lines straight; past it the turn starts
+		// from zero and grows faster towards full lock, so small corrections
+		// of the hand stay small.
+		constexpr float DeadZone = .1f;
+		const float magnitude = std::clamp((std::fabs(turn) - DeadZone) / (1 - DeadZone), 0.f, 1.f);
+		turn = std::copysign(magnitude * (.4f + .6f * magnitude), turn);
 		const float lean = std::clamp(wrapAngle(pitch - t.pitch0) / .5f, -1.f, 1.f);
 		// Light smoothing against hand tremor; no visible lag at 60 Hz.
 		t.steer += (turn - t.steer) * .5f;
