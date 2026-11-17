@@ -50,7 +50,7 @@ jobs:
           sudo apt-get install -y autoconf automake bison flex gcc libelf-dev make \
             texinfo libncurses5-dev patch subversion wget zlib1g-dev \
             libtool libtool-bin bzip2 libgmp3-dev pkg-config g++ \
-            libssl-dev clang ninja-build cmake python-is-python3 python-dev-is-python3
+            libssl-dev clang ninja-build cmake python-is-python3 python-dev-is-python3 ccache
 
       - name: Download and Extract (Cache Miss)
         if: steps.cache-ps3dev.outputs.cache-hit != 'true'
@@ -67,14 +67,43 @@ jobs:
           echo "${{ env.PS3DEV }}/ppu/bin" >> $GITHUB_PATH
           echo "${{ env.PS3DEV }}/spu/bin" >> $GITHUB_PATH
 
+      - name: Cache Source Dependencies
+        uses: actions/cache@v6
+        with:
+          path: vendor
+          key: vendor-${{ hashFiles('dependencies.json', 'patches/citro3d-hardware.patch') }}
+
       - name: Bootstrap Dependencies
         run: python tools/bootstrap.py
 
+      - name: Cache Compiler Output
+        uses: actions/cache@v6
+        with:
+          path: .ccache
+          key: ccache-ps3-${{ runner.os }}-${{ steps.get-version.outputs.tag }}-${{ github.sha }}
+          restore-keys: |
+            ccache-ps3-${{ runner.os }}-${{ steps.get-version.outputs.tag }}-
+
+      - name: Configure ccache
+        run: |
+          echo "CCACHE_DIR=${{ github.workspace }}/.ccache" >> $GITHUB_ENV
+          echo "CCACHE_BASEDIR=${{ github.workspace }}" >> $GITHUB_ENV
+          echo "CCACHE_COMPILERCHECK=content" >> $GITHUB_ENV
+          echo "CCACHE_MAXSIZE=2G" >> $GITHUB_ENV
+          echo "CCACHE_NOHASHDIR=true" >> $GITHUB_ENV
+
       - name: Configure CMake
-        run: cmake -G Ninja -B build/ps3 -DMKW_PLATFORM=ps3
+        run: |
+          ccache --zero-stats
+          cmake -G Ninja -B build/ps3 -DMKW_PLATFORM=ps3 \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 
       - name: Build Project
         run: cmake --build build/ps3
+
+      - name: ccache Statistics
+        if: always()
+        run: ccache --show-stats
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
