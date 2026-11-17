@@ -327,6 +327,8 @@ struct MoveTilt {
 	unsigned shake = 0;          // scans the shake trick stays held
 	unsigned rumble = 0;         // scans of rumble left (controller chosen)
 	bool rumbling = false;
+	s32 loggedResult = 1; // no libgem answer logged yet
+	bool loggedGemButtons = false, loggedPadButtons = false, loggedSensors = false;
 };
 MoveTilt tilt[Moves];
 bool gemReady = false, gemTried = false;
@@ -377,23 +379,60 @@ float wrapAngle(float a) {
 	while (a < -3.14159265f) a += 6.2831853f;
 	return a;
 }
-void scanMove(PadState& s, int m, bool connected) {
+// The Move's buttons as libpad reports them on its pad port (counted from
+// 0, -1 for none), in libgem's bits: Cross, Circle, Triangle, Square, Start
+// and Select as on a DualShock 3, the Move button as R1 and T as R2.
+u16 movePadButtons[Moves] = {};
+u16 readMovePad(int m, int port) {
+	padData pad{};
+	// len 0: nothing changed since the last read; keep the previous state.
+	if (port < 0) movePadButtons[m] = 0;
+	else if (ioPadGetData(u32(port), &pad) == 0 && pad.len > 0) {
+		const u16 d1 = pad.button[2], d2 = pad.button[3];
+		u16 b = 0;
+		if (d2 & PAD_CTRL_CROSS) b |= MoveCross;
+		if (d2 & PAD_CTRL_CIRCLE) b |= MoveCircle;
+		if (d2 & PAD_CTRL_TRIANGLE) b |= MoveTriangle;
+		if (d2 & PAD_CTRL_SQUARE) b |= MoveSquare;
+		if (d2 & PAD_CTRL_R1) b |= MoveButton;
+		if (d2 & PAD_CTRL_R2) b |= MoveT;
+		if (d1 & PAD_CTRL_START) b |= MoveStart;
+		if (d1 & PAD_CTRL_SELECT) b |= MoveSelect;
+		movePadButtons[m] = b;
+	}
+	return movePadButtons[m];
+}
+void scanMove(PadState& s, int m, bool connected, int padPort) {
 	auto& t = tilt[m];
-	gemInertialState inertial{};
-	if (connected && gemGetInertialState(u32(m), GEM_INERTIAL_LATEST, 0, &inertial) != 0) connected = false;
 	if (!connected) {
 		s.connected = false; s.circle = {}; t = {};
+		movePadButtons[m] = 0;
 		finishScan(s, 0, 0, 0);
 		return;
 	}
 	s.connected = true;
-	const u16 buttons = inertial.pad.buttons;
+	// libgem's inertial state carries the buttons and the motion sensors; the
+	// pad port's buttons are merged in, so the Move still answers should
+	// libgem's copy stay empty.
+	gemInertialState inertial{};
+	const s32 result = gemGetInertialState(u32(m), GEM_INERTIAL_LATEST, 0, &inertial);
+	const bool sensors = result == 0;
+	const u16 buttons = u16((sensors ? inertial.pad.buttons : 0) | readMovePad(m, padPort));
+	// Diagnostics for ps3.log: libgem's answer, the first buttons seen from each
+	// source and the first sensor reading.
+	if (result != t.loggedResult) { t.loggedResult = result; std::printf("move %d: inertial state %d\n", m, int(result)); }
+	if (sensors && inertial.pad.buttons && !t.loggedGemButtons) { t.loggedGemButtons = true; std::printf("move %d: libgem buttons 0x%x\n", m, unsigned(inertial.pad.buttons)); }
+	if (movePadButtons[m] && !t.loggedPadButtons) { t.loggedPadButtons = true; std::printf("move %d: pad port buttons 0x%x\n", m, unsigned(movePadButtons[m])); }
+	if (sensors && !t.loggedSensors) {
+		t.loggedSensors = true;
+		std::printf("move %d: accelerometer %.2f %.2f %.2f\n", m, double(lane(inertial.accelerometer, 0)), double(lane(inertial.accelerometer, 1)), double(lane(inertial.accelerometer, 2)));
+	}
 	// The accelerometer (in g) at rest points away from gravity. Held sideways,
 	// turning the Move like a wheel rotates it in its face's (x, y) plane;
 	// tilting it forwards or back moves it out of that plane (z).
 	const float ax = lane(inertial.accelerometer, 0), ay = lane(inertial.accelerometer, 1), az = lane(inertial.accelerometer, 2);
 	const float plane = std::sqrt(ax * ax + ay * ay), length = std::sqrt(plane * plane + az * az);
-	if (plane > .35f && length > .5f && length < 1.6f) {
+	if (sensors && plane > .35f && length > .5f && length < 1.6f) {
 		const float roll = std::atan2(ay, ax), pitch = std::atan2(az, plane);
 		if (!t.neutralSet || (buttons & MoveSelect)) { t.roll0 = roll; t.pitch0 = pitch; t.neutralSet = true; }
 		float turn = wrapAngle(roll - t.roll0) / steerAngle;
@@ -407,7 +446,7 @@ void scanMove(PadState& s, int m, bool connected) {
 	}
 	// A shake (the Wii Remote's trick) is a burst of rotation.
 	const float gx = lane(inertial.gyro, 0), gy = lane(inertial.gyro, 1), gz = lane(inertial.gyro, 2);
-	if (gx * gx + gy * gy + gz * gz > 9.f * 9.f) t.shake = 10;
+	if (sensors && gx * gx + gy * gy + gz * gz > 9.f * 9.f) t.shake = 10;
 	else if (t.shake) --t.shake;
 	u32 keys = 0;
 	if (buttons & MoveButton) keys |= KEY_A;
@@ -439,6 +478,19 @@ const PadState* player(unsigned index) {
 extern "C" void hidScanInput(void) {
 	if (!inputReady) { ioPadInit(7); inputReady = true; }
 	if (!gemTried) initGem();
+	// libgem refreshes its controllers' state (buttons and motion sensors) in
+	// its per-frame update; without a camera the update runs on no frame.
+	if (gemReady) {
+		static const u64 frequency = sysGetTimebaseFrequency();
+		const u64 tb = __gettime();
+		const s32 start = gemUpdateStart(nullptr, system_time_t(tb / frequency * 1000000u + tb % frequency * 1000000u / frequency));
+		const s32 finish = gemUpdateFinish();
+		static s32 loggedStart = 1, loggedFinish = 1;
+		if (start != loggedStart || finish != loggedFinish) {
+			loggedStart = start; loggedFinish = finish;
+			std::printf("move: update start %d, finish %d\n", int(start), int(finish));
+		}
+	}
 	gemInfo moveInfo{};
 	const bool movesOk = gemReady && gemGetInfo(&moveInfo) == 0;
 	// A connected Move is also listed by libpad, as an ordinary pad on its own
@@ -463,8 +515,11 @@ extern "C" void hidScanInput(void) {
 	const bool ok = ioPadGetInfo(&info) == 0;
 	for (int port = 0; port < DualShockPorts; ++port)
 		scanDualShock(dualShocks[port], port, ok && port < int(info.max) && info.status[port] && !movePort[port]);
-	for (int m = 0; m < Moves; ++m)
-		scanMove(moves[m], m, movesOk && u32(m) < moveInfo.max && moveInfo.status[m] == 1);
+	for (int m = 0; m < Moves; ++m) {
+		const bool connected = movesOk && u32(m) < moveInfo.max && moveInfo.status[m] == 1;
+		const int padPort = connected && moveInfo.port[m] >= 1 && moveInfo.port[m] <= u32(DualShockPorts) && ok && info.status[moveInfo.port[m] - 1] ? int(moveInfo.port[m]) - 1 : -1;
+		scanMove(moves[m], m, connected, padPort);
+	}
 	playerCount = 0;
 	if (assignedCount) {
 		for (unsigned p = 0; p < assignedCount; ++p) playerDevice[playerCount++] = assigned[p];
