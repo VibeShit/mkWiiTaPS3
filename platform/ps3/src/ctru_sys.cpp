@@ -230,7 +230,7 @@ extern "C" Result CFGU_GetConfigInfoBlk2(u32, u32, void*) { return -1; }
 // A Move, held sideways like the Wii Wheel (buttons facing the player): its
 // tilt steers (the Circle Pad's x; tilting it forwards and back is the y, for
 // menus and aiming items), the Move button accelerates and confirms (A), T
-// drifts and brakes (R), Cross uses the item (L), Square throws it backwards,
+// drifts and brakes (R), Cross uses the item (L) and confirms, Square throws it backwards,
 // Circle looks behind and backs out (B), Triangle or a shake tricks (X),
 // Select sets the current tilt as straight ahead.
 namespace {
@@ -413,6 +413,10 @@ void scanMove(PadState& s, int m, bool connected) {
 	if (buttons & MoveButton) keys |= KEY_A;
 	if (buttons & MoveT) keys |= KEY_R;
 	if (buttons & (MoveCross | MoveSquare)) keys |= KEY_L;
+	// Cross also confirms, as on a DualShock 3 (the controller choice, menus).
+	// In a race it can only add accelerating to the item throw, and the Move
+	// button is held to drive anyway.
+	if (buttons & MoveCross) keys |= KEY_A;
 	if (buttons & MoveCircle) keys |= KEY_B;
 	if ((buttons & MoveTriangle) || t.shake) keys |= KEY_X;
 	if (buttons & MoveStart) keys |= KEY_START;

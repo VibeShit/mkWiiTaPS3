@@ -58,8 +58,8 @@ Splitscreen and PlayStation Move (see below) add these lines:
 Connect a DualShock 3 or a PlayStation Move per player, then choose
 **Multiplayer** on the main menu and pick **2P**, **3P** or **4P**.
 
-1. Each player in turn presses X on their DualShock 3 or the Move button on
-   their Move: that controller is theirs. Circle on that controller undoes the
+1. Each player in turn presses X on their DualShock 3, or X or the Move
+   button on their Move: that controller is theirs. Circle on that controller undoes the
    last choice (any controller can, once it is disconnected); with none made,
    Circle goes back to the main menu.
 2. Player 1 chooses the engine class (50cc, 100cc, 150cc or Mirror).
@@ -103,7 +103,7 @@ sideways like the Wii Wheel, buttons facing you, and tilt it to turn.
 | Tilt forwards / back | Menus up/down; with Cross, throw items forwards/back |
 | Move button | Accelerate / confirm |
 | T (trigger) | Drift (with the Move button held), else brake |
-| Cross | Use item |
+| Cross | Use item; confirm in menus |
 | Square | Throw item backwards |
 | Circle | Look behind / back in menus |
 | Triangle or a shake | Trick (off a ramp or in the air) / bike wheelie |
