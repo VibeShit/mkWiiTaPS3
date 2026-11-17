@@ -33,6 +33,8 @@ struct Spark {
 class DriftEffects {
 public:
     static constexpr unsigned Capacity=128;
+    // Sparks one draw takes: every racer's (RacerSparks, remote_kart_effects.hpp).
+    static constexpr unsigned DrawCapacity=512;
     std::array<Spark,Capacity> sparks{};
     std::array<SparkSpec,7> specs{};
     unsigned emitted=0,blueFrames=0,orangeFrames=0;

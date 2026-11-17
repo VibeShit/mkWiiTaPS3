@@ -258,7 +258,7 @@ bool Renderer::init(){
     overlay_=static_cast<Vertex*>(linearAlloc(kOverlayCapacity*sizeof(Vertex)));if(!overlay_)return fail();
     sprites_=static_cast<Vertex*>(linearAlloc(kSpriteCapacity*6*sizeof(Vertex)));if(!sprites_)return fail();
     text_=static_cast<Vertex*>(linearAlloc(kTextVertices*sizeof(Vertex)));if(!text_)return fail();
-    particles_=static_cast<Vertex*>(linearAlloc(DriftEffects::Capacity*12*sizeof(Vertex)));if(!particles_)return fail();
+    particles_=static_cast<Vertex*>(linearAlloc(DriftEffects::DrawCapacity*12*sizeof(Vertex)));if(!particles_)return fail();
     for(auto& v:effectVertices_){v=linearAlloc(kEffectVertices*sizeof(ef::DrawVertex));if(!v)return fail();}
     if(shader_->numDVLE<2)return fail();
     shaderProgramInit(&effectProgram_);effectProgramReady_=true;

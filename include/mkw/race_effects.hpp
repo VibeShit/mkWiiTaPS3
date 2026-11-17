@@ -21,7 +21,7 @@ struct EffectTexture { char name[32]; uint16_t width,height,paddedWidth,paddedHe
 // Steps at the 60 Hz simulation rate; presentation only.
 class RaceEffects {
 public:
-    static constexpr unsigned SlotCount=592;
+    static constexpr unsigned SlotCount=704;
     RaceEffects();
     ~RaceEffects();
     bool load(const char* path);
@@ -34,9 +34,10 @@ public:
     void burst(int spec,const EffectFrame& frame);
     // Persistent attachment: created when it becomes active, moved every step, and faded
     // (emitters stop, particles live on and keep following) when inactive. spec < 0 kills.
-    void attach(unsigned slot,int spec,const EffectFrame& frame,bool active);
+    // group: the EffectSystem group a new instance is created in (create).
+    void attach(unsigned slot,int spec,const EffectFrame& frame,bool active,uint8_t group=0);
     // Kill and create again, as KartEffect does for rk_jumpSeikou (0x80697d34).
-    void restart(unsigned slot,int spec,const EffectFrame& frame);
+    void restart(unsigned slot,int spec,const EffectFrame& frame,uint8_t group=0);
     void move(unsigned slot,const EffectFrame& frame);
     // EGG::Effect calls: create (vtable +0xc) starts an instance unless one is running,
     // followFade (+0x14) retires its emitters while it keeps following, kill (+0x18)

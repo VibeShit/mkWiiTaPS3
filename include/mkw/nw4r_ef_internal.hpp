@@ -27,7 +27,8 @@ template<class T,size_t N> struct Pool {
 // port keeps one activity list and masks groups out instead, so enabled groups calculate and
 // draw in creation order as before.
 struct System {
-    static constexpr size_t ParticleCapacity=1024,ManagerCapacity=320,EmitterCapacity=256,EffectCapacity=192,QueueCapacity=256;
+    // Twice retail's pools: every racer (not only player 0) runs its kart effects.
+    static constexpr size_t ParticleCapacity=2048,ManagerCapacity=640,EmitterCapacity=512,EffectCapacity=384,QueueCapacity=512;
     std::vector<EmitterResource> resources;
     Random random;
     Pool<Particle,ParticleCapacity> particles;

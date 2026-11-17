@@ -213,19 +213,19 @@ void RaceEffects::kill(unsigned slot){
     if(alive(slot))system_->retireEffect(*slots_[slot].effect);
     if(slot<SlotCount)slots_[slot]={};
 }
-void RaceEffects::attach(unsigned slot,int spec,const EffectFrame& frame,bool active){
+void RaceEffects::attach(unsigned slot,int spec,const EffectFrame& frame,bool active,uint8_t group){
     if(slot>=SlotCount)return;
     if(spec<0){kill(slot);return;}
     Slot& s=slots_[slot];
     if(active){
         // A fading instance or another emitter set hands the slot to a fresh one.
         if(alive(slot)&&(s.fading||s.spec!=spec)){followFade(slot);s={};}
-        if(!alive(slot))create(slot,spec,frame);
+        if(!alive(slot))create(slot,spec,frame,group);
     }else if(alive(slot)&&!s.fading)followFade(slot);
     move(slot,frame);
 }
-void RaceEffects::restart(unsigned slot,int spec,const EffectFrame& frame){
-    kill(slot);create(slot,spec,frame);
+void RaceEffects::restart(unsigned slot,int spec,const EffectFrame& frame,uint8_t group){
+    kill(slot);create(slot,spec,frame,group);
 }
 void RaceEffects::setGroups(uint32_t calc,uint32_t draw){system_->calcGroups=calc;system_->drawGroups=draw;}
 void RaceEffects::step(){if(ready)system_->calc();}

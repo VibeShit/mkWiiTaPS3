@@ -20,6 +20,7 @@
 #include <mkw/race_flow_ui.hpp>
 #include <mkw/kart_start_effects.hpp>
 #include <mkw/kart_smoke_effects.hpp>
+#include <mkw/remote_kart_effects.hpp>
 #include <mkw/race_results.hpp>
 #include <mkw/trick_presentation.hpp>
 #include <mkw/race_items.hpp>
@@ -1184,7 +1185,12 @@ int main() {
     auto remoteSmokeStorage=std::make_unique<mkw::RemoteKartSmoke>();
     auto& remoteSmoke=*remoteSmokeStorage;
     mkw::KartLandingEffects landingEffects;
-    auto resetKartFx=[&](){for(unsigned i=0;i<kartFx.size();++i)kartFx[i].reset(i,i==0);kartFxLod=KartFxLod{};playerSmoke={};remoteSmoke.reset();landingEffects.reset();};
+    // The other racers' kart effects and large drift sparks (player 0 has its own).
+    auto remoteKartFxStorage=std::make_unique<mkw::RemoteKartEffects>();
+    auto& remoteKartFx=*remoteKartFxStorage;
+    auto racerSparksStorage=std::make_unique<mkw::RacerSparks>();
+    auto& racerSparks=*racerSparksStorage;
+    auto resetKartFx=[&](){for(unsigned i=0;i<kartFx.size();++i)kartFx[i].reset(i,i==0);kartFxLod=KartFxLod{};playerSmoke={};remoteSmoke.reset();landingEffects.reset();remoteKartFx.reset();racerSparks.reset();};
     resetKartFx();
     bool raceVfxReady=false;
     auto loadRaceVfx=[&](){
@@ -1217,6 +1223,8 @@ int main() {
         if(!kartFxSlots.bind(raceEffects)){report("FAIL required power-up effect roots");return false;}
         if(!remoteSmoke.bind(raceEffects)){report("FAIL required remote smoke roots");return false;}
         if(!landingEffects.bind(raceEffects)){report("FAIL required landing smoke roots");return false;}
+        if(!remoteKartFx.bind(raceEffects))report("other racers' kart effects unavailable");
+        if(!racerSparks.ready()&&!racerSparks.load("textures/drift-effects.bin","textures/drift-effects-bike.bin"))report("other racers' drift sparks unavailable");
         raceVfxReady=true;
         return true;
     };
@@ -2381,6 +2389,30 @@ int main() {
                                     racer->inputs()->currentState().accelerate(),racer->collisionData(l).bFloor,racer->collisionData(r).bFloor,
                                     bike,status.onBit(St::Burnout),in.beforeRespawn||in.bullet,
                                     move->startEffectSerial(),move->startEffectDuration(),kartFxLod.lod.lod(i));
+                                // The kart effects player 0 gets from its own block: flames,
+                                // wheelie trail, drift chips and smoke, dust, trick sparkle,
+                                // and the large drift sparks.
+                                using BT=K::Kart::KartBoost::Type;
+                                const auto stageNow=K::System::RaceManager::Instance()->stage();
+                                const bool raceOn=stageNow>=K::System::RaceManager::Stage::Race;
+                                const bool grounded=status.onBit(St::TouchingGround);
+                                mkw::RemoteKartFxInput kfx;
+                                kfx.pose=frame;kfx.pose.scale=1;
+                                kfx.rearLeft=vec(racer->tirePhysics(l)->pos());kfx.rearRight=vec(racer->tirePhysics(r)->pos());
+                                kfx.vehicle=unsigned(K::System::RaceConfig::Instance()->raceScenario().players[i].vehicle);
+                                kfx.bike=bike;
+                                kfx.boosting=!intro.active()&&(move->boostActive(BT::MushroomAndBoostPanel)||move->boostActive(BT::TrickAndZipper)||
+                                    move->boostActive(BT::AllMt)||status.onBit(St::RampBoost));
+                                kfx.mushroomUses=raceItems->mushroomUses(i);
+                                kfx.driftState=unsigned(move->driftState());
+                                kfx.drifting=raceOn&&status.onBit(St::DriftManual,St::DriftAuto)&&grounded&&!bike;
+                                kfx.wheelie=status.onBit(St::Wheelie);
+                                kfx.offroad=raceOn&&grounded&&move->kclSpeedFactor()<.95f&&std::fabs(move->speed())>5.f;
+                                kfx.trick=status.onBit(St::InATrick,St::ZipperTrick);
+                                kfx.hidden=in.beforeRespawn||in.bullet;
+                                kfx.lod=kartFxLod.lod.lod(i);
+                                remoteKartFx.step(raceEffects,i,kfx);
+                                racerSparks.step(i,kfx.hidden||kfx.lod?0u:kfx.driftState,kfx.rearLeft,kfx.rearRight,in.forward,bike,in.up);
                             }
                             // A racer's group calculates (0x80678818) and draws (0x80678aec)
                             // without +7 or with +9.
@@ -2614,7 +2646,11 @@ int main() {
             renderer.setCourseLighting(true);
             courseObjects.drawWater(renderer);
             renderer.setCourseLighting(false);
-            renderer.drawSparks(driftEffects,sparkTexture);
+            if(fullRace&&racerSparks.ready()){
+                // Every racer's large drift sparks in one batch, player 0's first.
+                const unsigned sparkCount=racerSparks.merge(driftEffects);
+                renderer.drawSparks(racerSparks.specs(),mkw::RacerSparks::SpecCount,racerSparks.sparks(),sparkCount,sparkTexture);
+            }else renderer.drawSparks(driftEffects,sparkTexture);
             mkw::trace::at(mkw::trace::Main,"draw: effects");
             renderer.drawEffects(raceEffects,effectTextures->data());
             mkw::jobWorker().finishAll();

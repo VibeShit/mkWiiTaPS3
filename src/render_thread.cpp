@@ -638,6 +638,15 @@ void Renderer::drawSparks(const DriftEffects& effects,const Texture* textures){
     auto& c=command<SparksCommand>();
     c.specs=effects.specs.data();c.specCount=unsigned(effects.specs.size());c.sparks=live;c.count=count;c.textures=textures;
 }
+void Renderer::drawSparks(const SparkSpec* specs,unsigned specCount,const Spark* sparks,unsigned count,const Texture* textures){
+    count=std::min(count,DriftEffects::DrawCapacity);
+    if(!count)return;
+    if(!recording()){drawSparksNow(specs,specCount,sparks,count,textures);return;}
+    Spark* live=static_cast<Spark*>(data(sizeof(Spark)*count));
+    std::memcpy(static_cast<void*>(live),sparks,sizeof(Spark)*count);
+    auto& c=command<SparksCommand>();
+    c.specs=specs;c.specCount=specCount;c.sparks=live;c.count=count;c.textures=textures;
+}
 void Renderer::drawEffects(RaceEffects& effects,const Texture* textures){
     if(!effects.ready||!effects.liveParticles()||!effectVertices_[0]||!effectProgramReady_)return;
     if(!recording()){drawEffectsImmediate(effects,textures);return;}

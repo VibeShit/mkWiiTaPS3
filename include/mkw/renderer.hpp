@@ -317,6 +317,9 @@ public:
     // Live sparks and effect particles are copied when recorded; their quads
     // are built where the frame is drawn. Specs and textures must outlive it.
     void drawSparks(const DriftEffects& effects,const Texture* textures);
+    // A merged batch (RacerSparks): at most DriftEffects::DrawCapacity sparks, whose
+    // spec indices are into specs.
+    void drawSparks(const SparkSpec* specs,unsigned specCount,const Spark* sparks,unsigned count,const Texture* textures);
     // RKRace effects through the NW4R EF draw strategies (src/nw4r_ef_draw.cpp). Drawing
     // advances the strategies' tracked axes, as EF does.
     void drawEffects(RaceEffects& effects,const Texture* textures);
@@ -585,7 +588,7 @@ private:
     bool writesVertices() const {return !eye_||bottomPass_;}
     void beginBottomNow();
     Vertex* particles_=nullptr;
-    uint8_t sparkCounts_[DriftEffects::Capacity*2]{}; // vertices per spark, at its first vertex / 6
+    uint8_t sparkCounts_[DriftEffects::DrawCapacity*2]{}; // vertices per spark, at its first vertex / 6
     // NW4R EF: second shader (DVLE 1), view-space vertices and the colour-lookup texture.
     static constexpr unsigned kEffectVertices=8192;
     // One list, vertex buffer and lookup texture per splitscreen view: each
